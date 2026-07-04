@@ -55,6 +55,16 @@ Useful options:
 - `./desktop/run-tokenbudget-qt.sh --poll-seconds 60`
 - `./desktop/run-tokenbudget-qt.sh --graph-mode hourly`
 
+Optional monitor config lives in `~/.config/tokenbudget/qt-monitor.rc.py`. Example:
+
+```python
+SCALE = Decimal("10")
+DISABLED_PROVIDERS = {"cursor"}
+```
+
+All providers are enabled by default. Set `DISABLED_PROVIDERS` to any of
+`claude` and `cursor` to hide them and skip their backend refresh work.
+
 Right-click the widget for refresh, always-on-top, reset-position, and quit.
 Closing the window hides it to the tray when a tray is available; use the tray
 menu's `Quit` action to exit fully.

@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import claude_usage_costs as claude
 import cursor_agent_usage_costs as cursor
+from desktop.tokenbudget_config import CONFIG, PROVIDER_LABELS, SUPPORTED_PROVIDERS
 
 
 def parse_args() -> argparse.Namespace:
@@ -138,13 +139,26 @@ def combine_mode_payload(
 def main() -> int:
     args = parse_args()
     now = datetime.now().astimezone()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        claude_future = executor.submit(
-            collect_claude_payload, now, args.exclude_subagents
+    enabled_providers = set(CONFIG.enabled_providers())
+    with ThreadPoolExecutor(max_workers=max(1, len(enabled_providers))) as executor:
+        claude_future = (
+            executor.submit(collect_claude_payload, now, args.exclude_subagents)
+            if "claude" in enabled_providers
+            else None
         )
-        cursor_future = executor.submit(collect_cursor_payload, now)
-        claude_payload, claude_issues = claude_future.result()
-        cursor_payload, cursor_issues = cursor_future.result()
+        cursor_future = (
+            executor.submit(collect_cursor_payload, now)
+            if "cursor" in enabled_providers
+            else None
+        )
+        if claude_future is None:
+            claude_payload, claude_issues = empty_claude_payload(now), []
+        else:
+            claude_payload, claude_issues = claude_future.result()
+        if cursor_future is None:
+            cursor_payload, cursor_issues = empty_cursor_payload(now), []
+        else:
+            cursor_payload, cursor_issues = cursor_future.result()
     issues = claude_issues + cursor_issues
 
     modes = {
@@ -160,6 +174,15 @@ def main() -> int:
         "updated_at": int(now.timestamp()),
         "status": "ok" if not issues else "degraded",
         "issues": issues,
+        "providers": {
+            "enabled": [provider for provider in SUPPORTED_PROVIDERS if provider in enabled_providers],
+            "disabled": [
+                provider
+                for provider in SUPPORTED_PROVIDERS
+                if provider not in enabled_providers
+            ],
+            "labels": PROVIDER_LABELS,
+        },
         "modes": modes,
         **modes[args.graph_mode],
     }

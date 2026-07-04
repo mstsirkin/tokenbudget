@@ -31,13 +31,18 @@ from PySide6.QtWidgets import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+try:
+    from desktop.tokenbudget_config import CONFIG, PROVIDER_LABELS, RC_PATH
+except ModuleNotFoundError:
+    from tokenbudget_config import CONFIG, PROVIDER_LABELS, RC_PATH
+
 SNAPSHOT_HELPER = REPO_ROOT / "desktop" / "tokenbudget_snapshot.py"
 SETTINGS_GROUP = "qt-monitor"
-WINDOW_SIZE = QSize(440, 540)
+WINDOW_SIZE = QSize(*CONFIG.window_size)
 MONEY_QUANTUM = Decimal("0.01")
 # Quick display-only workaround for suspected inflation.
-# Set, for example, SCALE = Decimal("10") to divide all shown spend/token values by 10.
-SCALE: Decimal | None = None
+SCALE: Decimal | None = CONFIG.scale
+PROVIDER_ORDER = tuple(PROVIDER_LABELS)
 GRAPH_MODE_LABELS = {
     "hourly": "Hourly",
     "daily": "Daily",
@@ -216,6 +221,7 @@ class TokenbudgetWindow(QWidget):
         self.setMaximumWidth(WINDOW_SIZE.width())
 
         self._build_ui()
+        self._apply_provider_visibility(set(PROVIDER_ORDER))
         self._restore_position()
         self._setup_tray()
 
@@ -289,6 +295,10 @@ class TokenbudgetWindow(QWidget):
         self.tray_refresh_action.triggered.connect(lambda: self.request_snapshot(force=True))
         menu.addAction(self.tray_refresh_action)
 
+        self.tray_restart_action = QAction("Restart", self)
+        self.tray_restart_action.triggered.connect(self.restart_application)
+        menu.addAction(self.tray_restart_action)
+
         menu.addSeparator()
         self.tray_quit_action = QAction("Quit", self)
         self.tray_quit_action.triggered.connect(self.quit_application)
@@ -328,6 +338,19 @@ class TokenbudgetWindow(QWidget):
             self.tray_icon.hide()
         self.close()
         QApplication.instance().quit()
+
+    def restart_application(self) -> None:
+        result = QProcess.startDetached(
+            sys.executable,
+            [str(Path(__file__).resolve()), *sys.argv[1:]],
+            str(REPO_ROOT),
+        )
+        started = bool(result[0]) if isinstance(result, tuple) else bool(result)
+        if not started:
+            self.status_label.setText("Restart failed")
+            self.status_label.show()
+            return
+        self.quit_application()
 
     def _build_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -468,6 +491,24 @@ class TokenbudgetWindow(QWidget):
         card_layout.addWidget(self.claude_graph)
         self.cursor_graph = SpendHistoryGraph("Cursor", "#7fdc8a", self.card)
         card_layout.addWidget(self.cursor_graph)
+        self._provider_metric_widgets = {
+            "claude": (
+                self.claude_spend_label,
+                self.claude_spend_value,
+                self.claude_tokens_label,
+                self.claude_tokens_value,
+            ),
+            "cursor": (
+                self.cursor_spend_label,
+                self.cursor_spend_value,
+                self.cursor_tokens_label,
+                self.cursor_tokens_value,
+            ),
+        }
+        self._provider_graph_widgets = {
+            "claude": self.claude_graph,
+            "cursor": self.cursor_graph,
+        }
 
         self.status_label = QLabel("", self.card)
         self.status_label.setStyleSheet("color: #8f9db0; font-size: 11px;")
@@ -482,6 +523,28 @@ class TokenbudgetWindow(QWidget):
         layout.addWidget(label, row, 0)
         layout.addWidget(value, row, 1)
         return label, value
+
+    @staticmethod
+    def _enabled_providers_from_snapshot(snapshot: dict[str, Any]) -> set[str]:
+        providers = snapshot.get("providers")
+        if isinstance(providers, dict):
+            enabled = providers.get("enabled")
+            if isinstance(enabled, list):
+                return {
+                    provider
+                    for provider in enabled
+                    if isinstance(provider, str) and provider in PROVIDER_ORDER
+                }
+        return set(PROVIDER_ORDER)
+
+    def _apply_provider_visibility(self, enabled_providers: set[str]) -> None:
+        for provider in PROVIDER_ORDER:
+            visible = provider in enabled_providers
+            for widget in self._provider_metric_widgets.get(provider, ()):
+                widget.setVisible(visible)
+            graph_widget = self._provider_graph_widgets.get(provider)
+            if graph_widget is not None:
+                graph_widget.setVisible(visible)
 
     def toggle_pinned(self) -> None:
         self._pinned = not self._pinned
@@ -532,6 +595,8 @@ class TokenbudgetWindow(QWidget):
         self._apply_snapshot(snapshot)
 
     def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
+        enabled_providers = self._enabled_providers_from_snapshot(snapshot)
+        self._apply_provider_visibility(enabled_providers)
         modes = snapshot.get("modes")
         if isinstance(modes, dict):
             mode_payload = modes.get(self.graph_mode)
@@ -550,10 +615,10 @@ class TokenbudgetWindow(QWidget):
 
         selected_label = str(selected.get("label", "Selected period"))
         self.period_total_label.setText(f"{selected_label} total")
-        self.claude_spend_label.setText("Claude spend")
-        self.cursor_spend_label.setText("Cursor spend")
-        self.claude_tokens_label.setText("Claude tokens")
-        self.cursor_tokens_label.setText("Cursor tokens")
+        self.claude_spend_label.setText(f"{PROVIDER_LABELS['claude']} spend")
+        self.cursor_spend_label.setText(f"{PROVIDER_LABELS['cursor']} spend")
+        self.claude_tokens_label.setText(f"{PROVIDER_LABELS['claude']} tokens")
+        self.cursor_tokens_label.setText(f"{PROVIDER_LABELS['cursor']} tokens")
 
         self.period_total_value.setText(self._format_money(selected.get("total_cost_usd", 0)))
         self.claude_spend_value.setText(self._format_money(selected.get("claude_cost_usd", 0)))
@@ -580,7 +645,10 @@ class TokenbudgetWindow(QWidget):
         updated_at = int(snapshot.get("updated_at", 0) or 0)
         self.subtitle_label.setText(f"Updated {self._human_age(updated_at)}")
         issues = snapshot.get("issues") or []
-        if issues:
+        if not enabled_providers:
+            self.status_label.setText(f"All providers disabled in {RC_PATH}")
+            self.status_label.show()
+        elif issues:
             self.status_label.setText(str(issues[0]))
             self.status_label.show()
         else:
@@ -726,7 +794,8 @@ class TokenbudgetWindow(QWidget):
             ("CW", value.get("cache_write", 0)),
         ]
         return "  ".join(
-            f"{label} {cls._format_compact_int(amount)}" for label, amount in parts
+            f"{label} {'-' if amount is None else cls._format_compact_int(amount)}"
+            for label, amount in parts
         )
 
     @staticmethod

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import sys
 from datetime import datetime
@@ -137,10 +138,13 @@ def combine_mode_payload(
 def main() -> int:
     args = parse_args()
     now = datetime.now().astimezone()
-    claude_payload, claude_issues = collect_claude_payload(
-        now, exclude_subagents=args.exclude_subagents
-    )
-    cursor_payload, cursor_issues = collect_cursor_payload(now)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claude_future = executor.submit(
+            collect_claude_payload, now, args.exclude_subagents
+        )
+        cursor_future = executor.submit(collect_cursor_payload, now)
+        claude_payload, claude_issues = claude_future.result()
+        cursor_payload, cursor_issues = cursor_future.result()
     issues = claude_issues + cursor_issues
 
     modes = {

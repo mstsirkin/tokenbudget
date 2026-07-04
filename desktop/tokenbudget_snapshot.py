@@ -93,7 +93,7 @@ def collect_cursor_payload(now: datetime) -> tuple[dict[str, Any], list[str]]:
         rows = cursor.parse_csv_rows(cursor.load_csv_text(csv_args))
         return cursor.build_all_modes_payload(rows, now), issues
     except Exception as exc:  # pragma: no cover - surfaced to UI
-        issues.append(f"Cursor: {exc}")
+        issues.append(f"{PROVIDER_LABELS['cursor']}: {exc}")
         return empty_cursor_payload(now), issues
 
 
@@ -170,12 +170,17 @@ def combine_mode_payload(
     }
 
 
-def main() -> int:
-    args = parse_args()
-    now = datetime.now().astimezone()
+def build_snapshot_payload(
+    *,
+    graph_mode: str,
+    exclude_subagents: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if now is None:
+        now = datetime.now().astimezone()
     enabled_providers = set(CONFIG.enabled_providers())
     provider_collectors = {
-        "claude": lambda: collect_claude_payload(now, args.exclude_subagents),
+        "claude": lambda: collect_claude_payload(now, exclude_subagents),
         "cursor": lambda: collect_cursor_payload(now),
         "gemini": lambda: collect_gemini_payload(now),
     }
@@ -213,7 +218,7 @@ def main() -> int:
         for mode in cursor.GRAPH_MODES
     }
 
-    payload = {
+    return {
         "updated_at": int(now.timestamp()),
         "status": "ok" if not issues else "degraded",
         "issues": issues,
@@ -227,8 +232,16 @@ def main() -> int:
             "labels": PROVIDER_LABELS,
         },
         "modes": modes,
-        **modes[args.graph_mode],
+        **modes[graph_mode],
     }
+
+
+def main() -> int:
+    args = parse_args()
+    payload = build_snapshot_payload(
+        graph_mode=args.graph_mode,
+        exclude_subagents=args.exclude_subagents,
+    )
     print(json.dumps(payload, sort_keys=True))
     return 0
 

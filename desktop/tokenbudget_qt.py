@@ -33,10 +33,11 @@ from PySide6.QtWidgets import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 try:
     from desktop.tokenbudget_config import CONFIG, PROVIDER_LABELS, RC_PATH
+    from desktop import tokenbudget_snapshot as snapshot_helper
 except ModuleNotFoundError:
     from tokenbudget_config import CONFIG, PROVIDER_LABELS, RC_PATH
+    import tokenbudget_snapshot as snapshot_helper
 
-SNAPSHOT_HELPER = REPO_ROOT / "desktop" / "tokenbudget_snapshot.py"
 SETTINGS_GROUP = "qt-monitor"
 WINDOW_SIZE = QSize(*CONFIG.window_size)
 MONEY_QUANTUM = Decimal("0.01")
@@ -54,6 +55,14 @@ GRAPH_MODE_LABELS = {
     "weekly": "Weekly",
     "monthly": "Monthly",
 }
+SNAPSHOT_HELPER_FLAG = "--snapshot-helper"
+
+
+def build_self_command(extra_args: list[str]) -> tuple[str, list[str]]:
+    argv0 = Path(sys.argv[0]).resolve() if sys.argv else Path(__file__).resolve()
+    if argv0.suffix in {".py", ".pyw"}:
+        return sys.executable, [str(argv0), *extra_args]
+    return sys.executable, extra_args
 
 
 def decimal_value(value: Any) -> Decimal:
@@ -118,8 +127,8 @@ class SpendHistoryGraph(QWidget):
             return
 
         values = [value for _, value in self._series]
-        latest_value = values[-1]
-        max_value = self._axis_ceiling(max(values))
+        max_bucket_value = max(values)
+        axis_max_value = self._axis_ceiling(max_bucket_value)
         bottom = plot_rect.bottom() - 22
         top = plot_rect.top() + 28
         left = plot_rect.left() + label_width
@@ -133,7 +142,7 @@ class SpendHistoryGraph(QWidget):
         for step in range(5):
             ratio = step / 4.0
             y = top + (height * ratio)
-            tick_value = max_value * (1.0 - ratio)
+            tick_value = axis_max_value * (1.0 - ratio)
             painter.setFont(label_font)
             painter.setPen(QColor("#9aa7b8"))
             painter.drawText(
@@ -150,7 +159,7 @@ class SpendHistoryGraph(QWidget):
         painter.drawText(
             QRectF(left, plot_rect.top() + 8, width, 18),
             Qt.AlignmentFlag.AlignRight,
-            f"{self._format_money_float(latest_value)}/{self.unit_suffix}",
+            f"max: {self._format_money_float(max_bucket_value)}/{self.unit_suffix}",
         )
         painter.drawText(QRectF(left, bottom + 6, width / 2, 16), self._series[0][0])
         painter.drawText(
@@ -163,7 +172,7 @@ class SpendHistoryGraph(QWidget):
         count = len(self._series)
         for index, (_, value) in enumerate(self._series):
             x = left + (width / 2.0 if count == 1 else width * index / (count - 1))
-            y = top + height - ((value / max_value) * height)
+            y = top + height - ((value / axis_max_value) * height)
             if index == 0:
                 path.moveTo(x, y)
             else:
@@ -206,9 +215,10 @@ class SpendHistoryGraph(QWidget):
 
 
 class TokenbudgetWindow(QWidget):
-    def __init__(self, *, poll_seconds: int, graph_mode: str) -> None:
+    def __init__(self, *, poll_seconds: int, graph_mode: str, exclude_subagents: bool) -> None:
         super().__init__()
         self.poll_seconds = poll_seconds
+        self.exclude_subagents = exclude_subagents
         self.settings = QSettings("tokenbudget", SETTINGS_GROUP)
         saved_mode = self.settings.value("graph_mode", graph_mode, type=str)
         self.graph_mode = saved_mode if saved_mode in GRAPH_MODE_LABELS else graph_mode
@@ -348,11 +358,8 @@ class TokenbudgetWindow(QWidget):
         QApplication.instance().quit()
 
     def restart_application(self) -> None:
-        result = QProcess.startDetached(
-            sys.executable,
-            [str(Path(__file__).resolve()), *sys.argv[1:]],
-            str(REPO_ROOT),
-        )
+        program, arguments = build_self_command(sys.argv[1:])
+        result = QProcess.startDetached(program, arguments, str(REPO_ROOT))
         started = bool(result[0]) if isinstance(result, tuple) else bool(result)
         if not started:
             self.status_label.setText("Restart failed")
@@ -474,12 +481,24 @@ class TokenbudgetWindow(QWidget):
         metrics.setHorizontalSpacing(12)
         metrics.setVerticalSpacing(4)
         self.period_total_label, self.period_total_value = self._add_metric(metrics, 0, "Period total")
-        self.claude_spend_label, self.claude_spend_value = self._add_metric(metrics, 1, "Claude spend")
-        self.cursor_spend_label, self.cursor_spend_value = self._add_metric(metrics, 2, "Cursor spend")
-        self.gemini_spend_label, self.gemini_spend_value = self._add_metric(metrics, 3, "Gemini spend")
-        self.claude_tokens_label, self.claude_tokens_value = self._add_metric(metrics, 4, "Claude tokens")
-        self.cursor_tokens_label, self.cursor_tokens_value = self._add_metric(metrics, 5, "Cursor tokens")
-        self.gemini_tokens_label, self.gemini_tokens_value = self._add_metric(metrics, 6, "Gemini tokens")
+        self.claude_spend_label, self.claude_spend_value = self._add_metric(
+            metrics, 1, f"{PROVIDER_LABELS['claude']} spend"
+        )
+        self.cursor_spend_label, self.cursor_spend_value = self._add_metric(
+            metrics, 2, f"{PROVIDER_LABELS['cursor']} spend"
+        )
+        self.gemini_spend_label, self.gemini_spend_value = self._add_metric(
+            metrics, 3, f"{PROVIDER_LABELS['gemini']} spend"
+        )
+        self.claude_tokens_label, self.claude_tokens_value = self._add_metric(
+            metrics, 4, f"{PROVIDER_LABELS['claude']} tokens"
+        )
+        self.cursor_tokens_label, self.cursor_tokens_value = self._add_metric(
+            metrics, 5, f"{PROVIDER_LABELS['cursor']} tokens"
+        )
+        self.gemini_tokens_label, self.gemini_tokens_value = self._add_metric(
+            metrics, 6, f"{PROVIDER_LABELS['gemini']} tokens"
+        )
         card_layout.addLayout(metrics)
 
         text_block_width = WINDOW_SIZE.width() - 40
@@ -490,18 +509,24 @@ class TokenbudgetWindow(QWidget):
         self.graph_title.setFixedHeight(18)
         card_layout.addWidget(self.graph_title)
 
-        self.graph_note = QLabel("Each point is one hourly bucket, computed directly on refresh.", self.card)
+        self.graph_note = QLabel("Data will be shown after refresh.", self.card)
         self.graph_note.setStyleSheet("color: #8f9db0; font-size: 11px;")
         self.graph_note.setWordWrap(True)
         self.graph_note.setMaximumWidth(text_block_width)
         self.graph_note.setFixedHeight(32)
         card_layout.addWidget(self.graph_note)
 
-        self.claude_graph = SpendHistoryGraph("Claude", PROVIDER_GRAPH_COLORS["claude"], self.card)
+        self.claude_graph = SpendHistoryGraph(
+            PROVIDER_LABELS["claude"], PROVIDER_GRAPH_COLORS["claude"], self.card
+        )
         card_layout.addWidget(self.claude_graph)
-        self.cursor_graph = SpendHistoryGraph("Cursor", PROVIDER_GRAPH_COLORS["cursor"], self.card)
+        self.cursor_graph = SpendHistoryGraph(
+            PROVIDER_LABELS["cursor"], PROVIDER_GRAPH_COLORS["cursor"], self.card
+        )
         card_layout.addWidget(self.cursor_graph)
-        self.gemini_graph = SpendHistoryGraph("Gemini", PROVIDER_GRAPH_COLORS["gemini"], self.card)
+        self.gemini_graph = SpendHistoryGraph(
+            PROVIDER_LABELS["gemini"], PROVIDER_GRAPH_COLORS["gemini"], self.card
+        )
         card_layout.addWidget(self.gemini_graph)
         self._provider_metric_widgets = {
             "claude": (
@@ -583,10 +608,11 @@ class TokenbudgetWindow(QWidget):
         if self.process.state() != QProcess.ProcessState.NotRunning:
             return
         del force
-        self.process.start(
-            sys.executable,
-            [str(SNAPSHOT_HELPER), "--graph-mode", self.graph_mode],
-        )
+        helper_args = [SNAPSHOT_HELPER_FLAG, "--graph-mode", self.graph_mode]
+        if self.exclude_subagents:
+            helper_args.append("--exclude-subagents")
+        program, arguments = build_self_command(helper_args)
+        self.process.start(program, arguments)
         self.subtitle_label.setText("Refreshing...")
 
     def _handle_snapshot_finished(self) -> None:
@@ -857,11 +883,29 @@ def parse_args() -> argparse.Namespace:
         default="hourly",
         help="Initial graph mode (default: hourly).",
     )
+    parser.add_argument(
+        "--exclude-subagents",
+        action="store_true",
+        help="Exclude Claude subagent usage from the totals.",
+    )
+    parser.add_argument(
+        SNAPSHOT_HELPER_FLAG,
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.snapshot_helper:
+        payload = snapshot_helper.build_snapshot_payload(
+            graph_mode=args.graph_mode,
+            exclude_subagents=args.exclude_subagents,
+        )
+        print(json.dumps(payload, sort_keys=True))
+        return 0
+
     app = QApplication(sys.argv)
     app.setApplicationName("tokenbudget")
     app.setOrganizationName("tokenbudget")
@@ -870,6 +914,7 @@ def main() -> int:
     window = TokenbudgetWindow(
         poll_seconds=args.poll_seconds,
         graph_mode=args.graph_mode,
+        exclude_subagents=args.exclude_subagents,
     )
     window.show()
     return app.exec()

@@ -14,7 +14,7 @@ RC_PATH = Path.home() / ".config" / "tokenbudget" / "qt-monitor.rc.py"
 SUPPORTED_PROVIDERS = ("claude", "cursor", "gemini")
 PROVIDER_LABELS = {
     "claude": "Claude",
-    "cursor": "Cursor",
+    "cursor": "Cursor CLI",
     "gemini": "Gemini",
 }
 DEFAULT_WINDOW_SIZE = (440, 690)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize Cursor Agent usage from Cursor's dashboard CSV export.
+"""Summarize Cursor CLI usage from Cursor's dashboard CSV export.
 
 Unlike the Claude script, this one uses Cursor's own server-side CSV export,
 which already includes per-event token columns and a reported cost field.
@@ -92,7 +92,7 @@ def get_default_auth_path() -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Fetch Cursor Agent usage CSV from cursor.com and summarize total "
+            "Fetch Cursor CLI usage CSV from cursor.com and summarize total "
             "tokens plus reported cost."
         )
     )
@@ -100,7 +100,7 @@ def parse_args() -> argparse.Namespace:
         "--auth-file",
         type=Path,
         default=get_default_auth_path(),
-        help="Path to Cursor auth.json (default: platform-specific Cursor auth file)",
+        help="Path to Cursor CLI auth.json (default: platform-specific Cursor CLI auth file)",
     )
     parser.add_argument(
         "--csv-file",
@@ -283,7 +283,7 @@ def decode_jwt_payload(jwt: str) -> dict[str, Any] | None:
 def build_session_cookie(access_token: str) -> str:
     payload = decode_jwt_payload(access_token)
     if not payload or not isinstance(payload.get("sub"), str) or not payload["sub"]:
-        raise RuntimeError("failed to decode Cursor access token subject")
+        raise RuntimeError("failed to decode Cursor CLI access token subject")
     sub = payload["sub"]
     return f"WorkosCursorSessionToken={urllib.parse.quote(sub)}%3A%3A{access_token}"
 
@@ -292,12 +292,14 @@ def read_access_token(auth_file: Path) -> str:
     try:
         data = json.loads(auth_file.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise RuntimeError(f"Cursor auth file not found: {auth_file}") from exc
+        raise RuntimeError(f"Cursor CLI auth file not found: {auth_file}") from exc
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Cursor auth file is not valid JSON: {auth_file}") from exc
+        raise RuntimeError(f"Cursor CLI auth file is not valid JSON: {auth_file}") from exc
     token = data.get("accessToken")
     if not isinstance(token, str) or not token:
-        raise RuntimeError(f"Cursor auth file does not contain a usable accessToken: {auth_file}")
+        raise RuntimeError(
+            f"Cursor CLI auth file does not contain a usable accessToken: {auth_file}"
+        )
     return token
 
 
@@ -316,9 +318,9 @@ def fetch_csv_text(auth_file: Path) -> str:
         with urllib.request.urlopen(request, timeout=60) as response:
             return response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Cursor CSV export failed with HTTP {exc.code}") from exc
+        raise RuntimeError(f"Cursor CLI CSV export failed with HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise RuntimeError(f"failed to fetch Cursor CSV export: {exc}") from exc
+        raise RuntimeError(f"failed to fetch Cursor CLI CSV export: {exc}") from exc
 
 
 def load_csv_text(args: argparse.Namespace) -> str:
@@ -664,7 +666,7 @@ def print_text_report(
 
     print(f"Source: {source}")
     print(f"Rows matched: {matched_rows:,} / {total_rows:,}")
-    print("Cost comes from Cursor's exported CSV `Cost` column.")
+    print("Cost comes from the Cursor CLI CSV export `Cost` column.")
     if date_range["first_event"] and date_range["last_event"]:
         print(f"Date range: {date_range['first_event']} .. {date_range['last_event']}")
     print()

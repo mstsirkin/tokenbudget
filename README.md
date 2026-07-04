@@ -1,7 +1,7 @@
 # tokenbudget
 
 Small command-line utilities for summarizing AI token usage and cost from
-local Claude Code transcripts and Cursor dashboard exports.
+local Claude Code transcripts and Cursor CLI dashboard exports.
 
 ## Scripts
 
@@ -13,7 +13,7 @@ Anthropic pricing data fetched from `models.dev` or a local cache.
 
 ### `cursor_agent_usage_costs.py`
 
-Fetches Cursor Agent usage as a CSV export from Cursor's dashboard API or reads
+Fetches Cursor CLI usage as a CSV export from Cursor's dashboard API or reads
 from a saved CSV file, then summarizes token totals and reported cost by event
 kind and model.
 
@@ -47,12 +47,14 @@ Then launch it:
 ./desktop/run-tokenbudget-qt.sh
 ```
 
+![tokenbudget Qt monitor](desktop/tokenbudget-qt-screenshot.png)
+
 The Qt monitor:
 
 - can be dragged by its header and remembers its position
 - stays transparent and borderless
-- computes its graph data directly on refresh with no local usage cache
-- shows two graphs, one for Claude buckets and one for Cursor buckets
+- updates its graph data on refresh without a local usage cache
+- shows provider graphs for Claude, Cursor CLI, and Gemini, hiding any providers disabled in the RC file
 - lets you switch the graph mode between `hourly`, `daily`, `weekly`, and `monthly`
 - adds a tray icon on desktops that support system trays, with show/raise, hide, pin, refresh, and quit actions
 
@@ -75,3 +77,20 @@ work.
 Right-click the widget for refresh, always-on-top, reset-position, and quit.
 Closing the window hides it to the tray when a tray is available; use the tray
 menu's `Quit` action to exit fully.
+
+## Packaging
+
+Use Nuitka to build a single executable that bundles the Python runtime, PySide6,
+and the non-stdlib dependencies used by the monitor and snapshot backends:
+
+```bash
+make build-deps
+make onefile
+```
+
+The built executable is written to `dist/tokenbudget`. The GUI now reuses that
+same executable for its background snapshot refreshes, so the packaged build
+does not need a separate helper `.py` script at runtime.
+
+On Linux, Nuitka still needs a working C toolchain and `patchelf` available on
+the build machine.

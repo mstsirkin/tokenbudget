@@ -39,7 +39,7 @@ except ModuleNotFoundError:
 SNAPSHOT_HELPER = REPO_ROOT / "desktop" / "tokenbudget_snapshot.py"
 SETTINGS_GROUP = "qt-monitor"
 WINDOW_SIZE = QSize(*CONFIG.window_size)
-MONEY_QUANTUM = Decimal("0.01")
+MONEY_QUANTUM = Decimal("0.1")
 # Quick display-only workaround for suspected inflation.
 SCALE: Decimal | None = CONFIG.scale
 PROVIDER_ORDER = tuple(PROVIDER_LABELS)
@@ -145,7 +145,7 @@ class SpendHistoryGraph(QWidget):
         painter.drawText(
             QRectF(left, plot_rect.top() + 8, width, 18),
             Qt.AlignmentFlag.AlignRight,
-            f"${latest_value:.2f}/{self.unit_suffix}",
+            f"{self._format_money_float(latest_value)}/{self.unit_suffix}",
         )
         painter.drawText(QRectF(left, bottom + 6, width / 2, 16), self._series[0][0])
         painter.drawText(
@@ -184,9 +184,12 @@ class SpendHistoryGraph(QWidget):
             return f"${value / 1000:.1f}k"
         if value >= 100:
             return f"${value:.0f}"
-        if value >= 10:
-            return f"${value:.1f}"
-        return f"${value:.2f}"
+        return SpendHistoryGraph._format_money_float(value)
+
+    @staticmethod
+    def _format_money_float(value: float) -> str:
+        amount = Decimal(str(value)).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        return f"${amount:,}"
 
     @staticmethod
     def _axis_ceiling(value: float) -> float:

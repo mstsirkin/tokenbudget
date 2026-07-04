@@ -27,6 +27,8 @@ DEFAULT_TRANSCRIPTS_ROOT = Path.home() / ".claude" / "projects"
 DEFAULT_CACHE_PATH = Path.home() / ".cache" / "claude-usage-costs" / "models.dev-api.json"
 DEFAULT_PRICING_URL = "https://models.dev/api.json"
 MILLION = Decimal("1000000")
+LOCAL_TZINFO = datetime.now().astimezone().tzinfo or UTC
+LOCAL_TZNAME = str(LOCAL_TZINFO)
 
 
 @dataclass
@@ -75,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--since",
         type=str,
-        help="Only include events on or after this ISO-8601 date/time or natural-language date expression. Date-only values start at 00:00:00 UTC.",
+        help="Only include events on or after this ISO-8601 date/time or natural-language date expression. Date-only values start at 00:00:00 local time.",
     )
     parser.add_argument(
         "--until",
@@ -146,7 +148,7 @@ def parse_when(value: str | None, *, end_of_day: bool = False) -> datetime | Non
         text,
         settings={
             "RETURN_AS_TIMEZONE_AWARE": True,
-            "TIMEZONE": "UTC",
+            "TIMEZONE": LOCAL_TZNAME,
             "TO_TIMEZONE": "UTC",
         },
     )
@@ -164,21 +166,27 @@ def parse_relative_day_keyword(text: str, *, end_of_day: bool) -> datetime | Non
     offset = offsets.get(" ".join(text.lower().split()))
     if offset is None:
         return None
-    day = (datetime.now(tz=UTC) + timedelta(days=offset)).date()
-    return datetime.combine(day, time.max if end_of_day else time.min, tzinfo=UTC)
+    day = (datetime.now(tz=LOCAL_TZINFO) + timedelta(days=offset)).date()
+    return datetime.combine(
+        day, time.max if end_of_day else time.min, tzinfo=LOCAL_TZINFO
+    ).astimezone(UTC)
 
 
 def parse_iso_value(text: str, *, end_of_day: bool) -> datetime:
     normalized = text
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
-    if "T" not in normalized and " " not in normalized:
-        normalized = normalized + (
-            "T23:59:59.999999+00:00" if end_of_day else "T00:00:00+00:00"
-        )
+    has_time = "T" in normalized or " " in normalized
     dt = datetime.fromisoformat(normalized)
+    if not has_time:
+        dt = dt.replace(
+            hour=23 if end_of_day else 0,
+            minute=59 if end_of_day else 0,
+            second=59 if end_of_day else 0,
+            microsecond=999999 if end_of_day else 0,
+        )
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
+        dt = dt.replace(tzinfo=LOCAL_TZINFO)
     return dt.astimezone(UTC)
 
 

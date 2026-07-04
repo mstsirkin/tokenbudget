@@ -29,6 +29,7 @@ DEFAULT_PRICING_URL = "https://models.dev/api.json"
 MILLION = Decimal("1000000")
 LOCAL_TZINFO = datetime.now().astimezone().tzinfo or UTC
 LOCAL_TZNAME = str(LOCAL_TZINFO)
+ZERO = Decimal("0")
 GRAPH_MODES: dict[str, dict[str, Any]] = {
     "hourly": {
         "count": 24,
@@ -454,6 +455,51 @@ def resolve_price_book(pricing_data: dict[str, Any], model: str, speed: str | No
     )
 
 
+def resolve_price_book_cached(
+    pricing_data: dict[str, Any],
+    model: str,
+    speed: str | None,
+    cache: dict[tuple[str, str | None], PriceBook | None],
+) -> PriceBook | None:
+    key = (model, speed)
+    if key not in cache:
+        cache[key] = resolve_price_book(pricing_data, model, speed)
+    return cache[key]
+
+
+def compute_event_costs(event: UsageEvent, price_book: PriceBook) -> dict[str, Decimal]:
+    input_cost = Decimal(event.input_tokens) * price_book.input_cost_per_mtok / MILLION
+    output_cost = Decimal(event.output_tokens) * price_book.output_cost_per_mtok / MILLION
+    cache_read_cost = (
+        Decimal(event.cache_read_input_tokens) * price_book.cache_read_cost_per_mtok / MILLION
+    )
+    cache_write_5m_cost = (
+        Decimal(event.cache_write_5m_input_tokens)
+        * price_book.cache_write_5m_cost_per_mtok
+        / MILLION
+    )
+    cache_write_1h_cost = (
+        Decimal(event.cache_write_1h_input_tokens)
+        * price_book.cache_write_1h_cost_per_mtok
+        / MILLION
+    )
+    total_cost = (
+        input_cost
+        + output_cost
+        + cache_read_cost
+        + cache_write_5m_cost
+        + cache_write_1h_cost
+    )
+    return {
+        "input_cost_usd": input_cost,
+        "output_cost_usd": output_cost,
+        "cache_read_cost_usd": cache_read_cost,
+        "cache_write_5m_cost_usd": cache_write_5m_cost,
+        "cache_write_1h_cost_usd": cache_write_1h_cost,
+        "total_cost_usd": total_cost,
+    }
+
+
 def intish(value: Any) -> int:
     if value in (None, ""):
         return 0
@@ -616,6 +662,7 @@ def summarize(
     )
     unknown_models = Counter()
     timestamps = [event.timestamp for event in events if event.timestamp is not None]
+    price_book_cache: dict[tuple[str, str | None], PriceBook | None] = {}
 
     for event in events:
         totals["responses"] += 1
@@ -643,7 +690,9 @@ def summarize(
         if event.model == "<synthetic>":
             continue
 
-        price_book = resolve_price_book(pricing_data, event.model, speed=event.speed)
+        price_book = resolve_price_book_cached(
+            pricing_data, event.model, event.speed, price_book_cache
+        )
         if price_book is None:
             token_total = (
                 event.input_tokens
@@ -658,36 +707,14 @@ def summarize(
 
         model_row["priced_as"] = price_book.model_id
 
-        input_cost = Decimal(event.input_tokens) * price_book.input_cost_per_mtok / MILLION
-        output_cost = Decimal(event.output_tokens) * price_book.output_cost_per_mtok / MILLION
-        cache_read_cost = (
-            Decimal(event.cache_read_input_tokens) * price_book.cache_read_cost_per_mtok / MILLION
-        )
-        cache_write_5m_cost = (
-            Decimal(event.cache_write_5m_input_tokens)
-            * price_book.cache_write_5m_cost_per_mtok
-            / MILLION
-        )
-        cache_write_1h_cost = (
-            Decimal(event.cache_write_1h_input_tokens)
-            * price_book.cache_write_1h_cost_per_mtok
-            / MILLION
-        )
-        total_cost = (
-            input_cost
-            + output_cost
-            + cache_read_cost
-            + cache_write_5m_cost
-            + cache_write_1h_cost
-        )
-
-        spend["input_cost_usd"] += input_cost
-        spend["output_cost_usd"] += output_cost
-        spend["cache_read_cost_usd"] += cache_read_cost
-        spend["cache_write_5m_cost_usd"] += cache_write_5m_cost
-        spend["cache_write_1h_cost_usd"] += cache_write_1h_cost
-        spend["total_cost_usd"] += total_cost
-        model_row["total_cost_usd"] += total_cost
+        costs = compute_event_costs(event, price_book)
+        spend["input_cost_usd"] += costs["input_cost_usd"]
+        spend["output_cost_usd"] += costs["output_cost_usd"]
+        spend["cache_read_cost_usd"] += costs["cache_read_cost_usd"]
+        spend["cache_write_5m_cost_usd"] += costs["cache_write_5m_cost_usd"]
+        spend["cache_write_1h_cost_usd"] += costs["cache_write_1h_cost_usd"]
+        spend["total_cost_usd"] += costs["total_cost_usd"]
+        model_row["total_cost_usd"] += costs["total_cost_usd"]
 
     model_rows = []
     for model, row in by_model.items():
@@ -718,8 +745,33 @@ def summarize(
     }
 
 
-def selected_claude_token_breakdown(summary: dict[str, Any]) -> dict[str, int]:
-    totals = summary["totals"]
+def empty_mode_totals() -> dict[str, Any]:
+    return {
+        "responses": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_write_5m_input_tokens": 0,
+        "cache_write_1h_input_tokens": 0,
+        "total_cost_usd": ZERO,
+    }
+
+
+def add_event_to_mode_totals(
+    totals: dict[str, Any],
+    event: UsageEvent,
+    total_cost_usd: Decimal,
+) -> None:
+    totals["responses"] += 1
+    totals["input_tokens"] += event.input_tokens
+    totals["output_tokens"] += event.output_tokens
+    totals["cache_read_input_tokens"] += event.cache_read_input_tokens
+    totals["cache_write_5m_input_tokens"] += event.cache_write_5m_input_tokens
+    totals["cache_write_1h_input_tokens"] += event.cache_write_1h_input_tokens
+    totals["total_cost_usd"] += total_cost_usd
+
+
+def selected_claude_token_breakdown(totals: dict[str, Any]) -> dict[str, int]:
     return {
         "input": int(totals["input_tokens"]),
         "output": int(totals["output_tokens"]),
@@ -730,45 +782,31 @@ def selected_claude_token_breakdown(summary: dict[str, Any]) -> dict[str, int]:
 
 
 def build_mode_payload(
-    events: list[UsageEvent],
-    pricing_data: dict[str, Any],
     now: datetime,
     mode: str,
+    buckets: list[dict[str, Any]],
+    config: dict[str, Any],
+    bucket_totals: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    buckets, config = bucket_range(now, mode)
     selected_label, selected_start, selected_end = selected_window(now, mode)
-    selected = summarize(
-        filter_events_window(events, selected_start, selected_end, inclusive_end=True),
-        pricing_data,
-    )
+    selected = bucket_totals[-1] if bucket_totals else empty_mode_totals()
     bucket_summaries = [
         {
             "start": bucket["start"].isoformat(),
             "end": bucket["end"].isoformat(),
             "label": bucket["label"],
-            "cost_usd": bucket_summary["spend"]["total_cost_usd"],
+            "cost_usd": str(bucket_totals[index]["total_cost_usd"]),
         }
-        for bucket in buckets
-        for bucket_summary in [
-            summarize(
-                filter_events_window(
-                    events,
-                    bucket["start"],
-                    bucket["end"],
-                    inclusive_end=(bucket["end"] == now),
-                ),
-                pricing_data,
-            )
-        ]
+        for index, bucket in enumerate(buckets)
     ]
     return {
         "selected": {
             "label": selected_label,
             "start": selected_start.isoformat(),
             "end": selected_end.isoformat(),
-            "cost_usd": selected["spend"]["total_cost_usd"],
+            "cost_usd": str(selected["total_cost_usd"]),
             "token_breakdown": selected_claude_token_breakdown(selected),
-            "responses": int(selected["totals"]["responses"]),
+            "responses": int(selected["responses"]),
         },
         "graph": {
             "mode": mode,
@@ -787,14 +825,54 @@ def build_all_modes_payload(
 ) -> dict[str, Any]:
     if now is None:
         now = datetime.now().astimezone()
-    relevant_events = filter_events_window(
-        events, all_modes_start(now), now, inclusive_end=True
-    )
+    range_start = all_modes_start(now)
+    relevant_events = [
+        event
+        for event in events
+        if event.timestamp is not None and range_start <= event.timestamp <= now
+    ]
+    mode_state: dict[str, dict[str, Any]] = {}
+    for mode in GRAPH_MODES:
+        buckets, config = bucket_range(now, mode)
+        mode_state[mode] = {
+            "buckets": buckets,
+            "config": config,
+            "bucket_index": {bucket["start"]: index for index, bucket in enumerate(buckets)},
+            "bucket_totals": [empty_mode_totals() for _ in buckets],
+        }
+
+    price_book_cache: dict[tuple[str, str | None], PriceBook | None] = {}
+    for event in relevant_events:
+        assert event.timestamp is not None
+        total_cost_usd = ZERO
+        if event.model != "<synthetic>":
+            price_book = resolve_price_book_cached(
+                pricing_data, event.model, event.speed, price_book_cache
+            )
+            if price_book is not None:
+                total_cost_usd = compute_event_costs(event, price_book)["total_cost_usd"]
+
+        event_local_timestamp = event.timestamp.astimezone(now.tzinfo)
+        for mode, state in mode_state.items():
+            bucket_start = start_of_bucket(event_local_timestamp, mode)
+            bucket_index = state["bucket_index"].get(bucket_start)
+            if bucket_index is None:
+                continue
+            add_event_to_mode_totals(
+                state["bucket_totals"][bucket_index], event, total_cost_usd
+            )
+
     return {
         "updated_at": int(now.timestamp()),
         "modes": {
-            mode: build_mode_payload(relevant_events, pricing_data, now, mode)
-            for mode in GRAPH_MODES
+            mode: build_mode_payload(
+                now,
+                mode,
+                state["buckets"],
+                state["config"],
+                state["bucket_totals"],
+            )
+            for mode, state in mode_state.items()
         },
     }
 

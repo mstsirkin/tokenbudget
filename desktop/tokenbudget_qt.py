@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QProcess, QRectF, QSettings, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QIcon, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -296,42 +296,45 @@ class TokenbudgetWindow(QWidget):
         self.tray_icon.activated.connect(self._tray_activated)
         self.close_button.setToolTip("Hide to tray")
 
-        menu = QMenu(self)
+        self.tray_menu = QMenu(self)
         self.tray_show_action = QAction("Show/Raise", self)
         self.tray_show_action.triggered.connect(self.show_and_raise)
-        menu.addAction(self.tray_show_action)
+        self.tray_menu.addAction(self.tray_show_action)
 
         self.tray_hide_action = QAction("Hide", self)
         self.tray_hide_action.triggered.connect(self.hide_to_tray)
-        menu.addAction(self.tray_hide_action)
+        self.tray_menu.addAction(self.tray_hide_action)
 
         self.tray_pin_action = QAction(self)
         self.tray_pin_action.triggered.connect(self.toggle_pinned)
-        menu.addAction(self.tray_pin_action)
+        self.tray_menu.addAction(self.tray_pin_action)
 
         self.tray_refresh_action = QAction("Refresh now", self)
         self.tray_refresh_action.triggered.connect(lambda: self.request_snapshot(force=True))
-        menu.addAction(self.tray_refresh_action)
+        self.tray_menu.addAction(self.tray_refresh_action)
 
         self.tray_restart_action = QAction("Restart", self)
         self.tray_restart_action.triggered.connect(self.restart_application)
-        menu.addAction(self.tray_restart_action)
+        self.tray_menu.addAction(self.tray_restart_action)
 
-        menu.addSeparator()
+        self.tray_menu.addSeparator()
         self.tray_quit_action = QAction("Quit", self)
         self.tray_quit_action.triggered.connect(self.quit_application)
-        menu.addAction(self.tray_quit_action)
+        self.tray_menu.addAction(self.tray_quit_action)
 
-        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.setContextMenu(self.tray_menu)
         self.tray_icon.show()
         self._sync_tray_actions()
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason in {
-            QSystemTrayIcon.ActivationReason.Trigger,
-            QSystemTrayIcon.ActivationReason.DoubleClick,
-        }:
-            self.show_and_raise()
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._show_tray_menu()
+
+    def _show_tray_menu(self) -> None:
+        if self.tray_icon is None or not hasattr(self, "tray_menu"):
+            return
+        self._sync_tray_actions()
+        self.tray_menu.popup(QCursor.pos())
 
     def _sync_tray_actions(self) -> None:
         if self.tray_icon is None:

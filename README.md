@@ -53,10 +53,10 @@ The Qt monitor:
 
 - can be dragged by its header and remembers its position
 - stays transparent and borderless
-- updates its graph data on refresh without a local usage cache
+- updates its graph data on refresh
 - shows provider graphs for Claude, Cursor CLI, and Gemini, hiding any providers disabled in the RC file
 - lets you switch the graph mode between `hourly`, `daily`, `weekly`, and `monthly`
-- adds a tray icon on desktops that support system trays, with show/raise, hide, pin, refresh, and quit actions
+- adds a tray icon on desktops that support system trays, with show/raise, hide, pin, refresh, restart, and quit actions
 
 Useful options:
 
@@ -75,8 +75,9 @@ All providers are enabled by default. Set `DISABLED_PROVIDERS` to any of
 work.
 
 Right-click the widget for refresh, always-on-top, reset-position, and quit.
-Closing the window hides it to the tray when a tray is available; use the tray
-menu's `Quit` action to exit fully.
+Closing the window hides it to the tray when a tray is available. Left- and
+right-clicking the tray icon open the same menu; use that menu's `Quit` action
+to exit fully.
 
 ## Packaging
 

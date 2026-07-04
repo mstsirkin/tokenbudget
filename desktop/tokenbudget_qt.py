@@ -32,16 +32,18 @@ from PySide6.QtWidgets import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 try:
+    from desktop import tokenbudget_config as config_module
     from desktop.tokenbudget_config import CONFIG, PROVIDER_LABELS, RC_PATH
     from desktop import tokenbudget_snapshot as snapshot_helper
 except ModuleNotFoundError:
+    import tokenbudget_config as config_module
     from tokenbudget_config import CONFIG, PROVIDER_LABELS, RC_PATH
     import tokenbudget_snapshot as snapshot_helper
 
 SETTINGS_GROUP = "qt-monitor"
 WINDOW_SIZE = QSize(*CONFIG.window_size)
 MONEY_QUANTUM = Decimal("0.01")
-# Quick display-only workaround for suspected token inflation.
+# Quick display-only correction for suspected overcounted usage.
 SCALE: Decimal | None = CONFIG.scale
 PROVIDER_ORDER = tuple(PROVIDER_LABELS)
 PROVIDER_GRAPH_COLORS = {
@@ -72,11 +74,16 @@ def decimal_value(value: Any) -> Decimal:
         return Decimal("0")
 
 
-def scaled_token_decimal(value: Any) -> Decimal:
+def scaled_display_decimal(value: Any) -> Decimal:
     amount = decimal_value(value)
     if SCALE is None or SCALE == 0:
         return amount
     return amount / SCALE
+
+
+def reload_display_config() -> None:
+    global SCALE
+    SCALE = config_module.load_rc_config().scale
 
 
 class SpendHistoryGraph(QWidget):
@@ -643,6 +650,7 @@ class TokenbudgetWindow(QWidget):
         self._apply_snapshot(snapshot)
 
     def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
+        reload_display_config()
         enabled_providers = self._enabled_providers_from_snapshot(snapshot)
         self._apply_provider_visibility(enabled_providers)
         modes = snapshot.get("modes")
@@ -725,7 +733,7 @@ class TokenbudgetWindow(QWidget):
             if not isinstance(label, str):
                 continue
             try:
-                value = float(decimal_value(item.get("cost_usd", 0) or 0))
+                value = float(scaled_display_decimal(item.get("cost_usd", 0) or 0))
             except (InvalidOperation, TypeError, ValueError):
                 continue
             series.append((label, value))
@@ -807,7 +815,7 @@ class TokenbudgetWindow(QWidget):
 
     @staticmethod
     def _format_money(value: Any) -> str:
-        amount = decimal_value(value).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        amount = scaled_display_decimal(value).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         return f"${amount:,}"
 
     @staticmethod
@@ -816,7 +824,7 @@ class TokenbudgetWindow(QWidget):
 
     @staticmethod
     def _format_compact_int(value: Any) -> str:
-        amount = scaled_token_decimal(value)
+        amount = scaled_display_decimal(value)
         sign = "-" if amount < 0 else ""
         amount = abs(amount)
         suffixes = [

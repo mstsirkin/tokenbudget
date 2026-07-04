@@ -19,7 +19,7 @@ PROVIDER_LABELS = {
 }
 DEFAULT_WINDOW_SIZE = (440, 690)
 # Example `~/.config/tokenbudget/qt-monitor.rc.py`:
-# SCALE = 2  # correct token double counting
+# SCALE = 2  # correct token/spend double counting
 # WINDOW_SIZE = (440, 690)
 # DISABLED_PROVIDERS = {"cursor"}
 

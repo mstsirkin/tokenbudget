@@ -66,7 +66,7 @@ Useful options:
 Optional monitor config lives in `~/.config/tokenbudget/qt-monitor.rc.py`. Example:
 
 ```python
-SCALE = 2  # correct token double counting
+SCALE = 2  # correct token/spend double counting
 DISABLED_PROVIDERS = {"cursor"}
 ```
 

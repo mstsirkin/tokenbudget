@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import dateparser
 import io
 import json
 import os
@@ -23,9 +24,6 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-
-from whenparse import parse_when
-
 
 USAGE_CSV_URL = "https://cursor.com/api/dashboard/export-usage-events-csv?strategy=tokens"
 
@@ -85,12 +83,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--since",
         type=str,
-        help="Only include rows on or after this ISO-8601 timestamp/date or GNU date expression. Date-only values start at 00:00:00 UTC.",
+        help="Only include rows on or after this ISO-8601 timestamp/date or natural-language date expression. Date-only values start at 00:00:00 UTC.",
     )
     parser.add_argument(
         "--until",
         type=str,
-        help="Only include rows on or before this ISO-8601 timestamp/date or GNU date expression. Date-only values include the full UTC day.",
+        help="Only include rows on or before this ISO-8601 timestamp/date or natural-language date expression. Date-only values include the full UTC day.",
     )
     parser.add_argument(
         "--kind",
@@ -128,6 +126,45 @@ def parse_csv_timestamp(value: str) -> datetime | None:
         dt = datetime.fromisoformat(text)
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def parse_when(value: str | None, *, end_of_day: bool = False) -> datetime | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+
+    try:
+        return parse_iso_value(text, end_of_day=end_of_day)
+    except ValueError:
+        pass
+
+    dt = dateparser.parse(
+        text,
+        settings={
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "TIMEZONE": "UTC",
+            "TO_TIMEZONE": "UTC",
+        },
+    )
+    if dt is None:
+        raise ValueError(f"could not parse {value!r} as a date/time")
+    return dt.astimezone(UTC)
+
+
+def parse_iso_value(text: str, *, end_of_day: bool) -> datetime:
+    normalized = text
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    if "T" not in normalized and " " not in normalized:
+        normalized = normalized + (
+            "T23:59:59.999999+00:00" if end_of_day else "T00:00:00+00:00"
+        )
+    dt = datetime.fromisoformat(normalized)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)

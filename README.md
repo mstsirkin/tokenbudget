@@ -18,12 +18,8 @@ from a saved CSV file, then summarizes token totals and reported cost by event
 kind and model.
 
 Both scripts accept `--since` and `--until` filters using ISO-8601 timestamps
-or GNU `date`-style expressions such as `2026-07-03`, `yesterday`, and
+or natural-language expressions such as `2026-07-03`, `yesterday`, and
 `1 hour ago`.
 
-## Shared Helper
-
-### `whenparse.py`
-
-Parses the date/time expressions used by the scripts so both tools handle the
-same filter syntax and date-only semantics.
+Natural-language parsing uses the Python `dateparser` package. On Fedora, install
+it with `sudo dnf install python3-dateparser`.

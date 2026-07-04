@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -133,6 +133,10 @@ def parse_when(value: str | None, *, end_of_day: bool = False) -> datetime | Non
     if not text:
         return None
 
+    keyword_dt = parse_relative_day_keyword(text, end_of_day=end_of_day)
+    if keyword_dt is not None:
+        return keyword_dt
+
     try:
         return parse_iso_value(text, end_of_day=end_of_day)
     except ValueError:
@@ -149,6 +153,19 @@ def parse_when(value: str | None, *, end_of_day: bool = False) -> datetime | Non
     if dt is None:
         raise ValueError(f"could not parse {value!r} as a date/time")
     return dt.astimezone(UTC)
+
+
+def parse_relative_day_keyword(text: str, *, end_of_day: bool) -> datetime | None:
+    offsets = {
+        "today": 0,
+        "yesterday": -1,
+        "tomorrow": 1,
+    }
+    offset = offsets.get(" ".join(text.lower().split()))
+    if offset is None:
+        return None
+    day = (datetime.now(tz=UTC) + timedelta(days=offset)).date()
+    return datetime.combine(day, time.max if end_of_day else time.min, tzinfo=UTC)
 
 
 def parse_iso_value(text: str, *, end_of_day: bool) -> datetime:

@@ -8,7 +8,7 @@ import json
 import math
 import sys
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -35,12 +35,29 @@ SNAPSHOT_HELPER = REPO_ROOT / "desktop" / "tokenbudget_snapshot.py"
 SETTINGS_GROUP = "qt-monitor"
 WINDOW_SIZE = QSize(440, 540)
 MONEY_QUANTUM = Decimal("0.01")
+# Quick display-only workaround for suspected inflation.
+# Set, for example, SCALE = Decimal("10") to divide all shown spend/token values by 10.
+SCALE: Decimal | None = None
 GRAPH_MODE_LABELS = {
     "hourly": "Hourly",
     "daily": "Daily",
     "weekly": "Weekly",
     "monthly": "Monthly",
 }
+
+
+def scaled_decimal(value: Any) -> Decimal:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
+    if SCALE is None or SCALE == 0:
+        return amount
+    return amount / SCALE
+
+
+def scaled_float(value: Any) -> float:
+    return float(scaled_decimal(value))
 
 
 class SpendHistoryGraph(QWidget):
@@ -427,7 +444,6 @@ class TokenbudgetWindow(QWidget):
         self.cursor_spend_label, self.cursor_spend_value = self._add_metric(metrics, 2, "Cursor spend")
         self.claude_tokens_label, self.claude_tokens_value = self._add_metric(metrics, 3, "Claude tokens")
         self.cursor_tokens_label, self.cursor_tokens_value = self._add_metric(metrics, 4, "Cursor tokens")
-        self.activity_label, self.activity_value = self._add_metric(metrics, 5, "Activity")
         card_layout.addLayout(metrics)
 
         self.graph_title = QLabel("Last 24 hourly buckets", self.card)
@@ -515,18 +531,16 @@ class TokenbudgetWindow(QWidget):
         self.cursor_spend_label.setText("Cursor spend")
         self.claude_tokens_label.setText("Claude tokens")
         self.cursor_tokens_label.setText("Cursor tokens")
-        self.activity_label.setText("Activity")
 
         self.period_total_value.setText(self._format_money(selected.get("total_cost_usd", 0)))
         self.claude_spend_value.setText(self._format_money(selected.get("claude_cost_usd", 0)))
         self.cursor_spend_value.setText(self._format_money(selected.get("cursor_cost_usd", 0)))
-        self.claude_tokens_value.setText(self._format_int(selected.get("claude_tokens", 0)))
-        self.cursor_tokens_value.setText(self._format_int(selected.get("cursor_tokens", 0)))
-        activity = (
-            f"C {self._format_int(selected.get('claude_responses', 0))} resp"
-            f"  |  Cur {self._format_int(selected.get('cursor_events', 0))} events"
+        self.claude_tokens_value.setText(
+            self._format_token_breakdown(selected.get("claude_token_breakdown"))
         )
-        self.activity_value.setText(activity)
+        self.cursor_tokens_value.setText(
+            self._format_token_breakdown(selected.get("cursor_token_breakdown"))
+        )
 
         unit_suffix = str(graph_meta.get("unit_suffix", "h"))
         self.graph_title.setText(str(graph_meta.get("title", "Buckets")))
@@ -562,8 +576,8 @@ class TokenbudgetWindow(QWidget):
             if not isinstance(label, str):
                 continue
             try:
-                value = float(item.get("cost_usd", 0) or 0)
-            except (TypeError, ValueError):
+                value = scaled_float(item.get("cost_usd", 0) or 0)
+            except (InvalidOperation, TypeError, ValueError):
                 continue
             series.append((label, value))
         return series
@@ -641,12 +655,53 @@ class TokenbudgetWindow(QWidget):
 
     @staticmethod
     def _format_money(value: Any) -> str:
-        amount = Decimal(str(value)).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        amount = scaled_decimal(value).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         return f"${amount:,}"
 
     @staticmethod
     def _format_int(value: Any) -> str:
         return f"{int(value):,}"
+
+    @staticmethod
+    def _format_compact_int(value: Any) -> str:
+        amount = scaled_decimal(value)
+        sign = "-" if amount < 0 else ""
+        amount = abs(amount)
+        suffixes = [
+            (Decimal("1000000000000"), "T"),
+            (Decimal("1000000000"), "B"),
+            (Decimal("1000000"), "M"),
+            (Decimal("1000"), "k"),
+        ]
+        for threshold, suffix in suffixes:
+            if amount >= threshold:
+                compact = amount / threshold
+                if compact >= 100:
+                    text = f"{compact.quantize(Decimal('1'), rounding=ROUND_HALF_UP):,}"
+                else:
+                    text = f"{compact.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP):,}"
+                    text = text.rstrip("0").rstrip(".")
+                return f"{sign}{text}{suffix}"
+        if amount == amount.to_integral_value(rounding=ROUND_HALF_UP):
+            return f"{sign}{int(amount):,}"
+        quantum = Decimal("0.01") if amount < 10 else Decimal("0.1")
+        text = f"{amount.quantize(quantum, rounding=ROUND_HALF_UP):,}"
+        text = text.rstrip("0").rstrip(".")
+        return f"{sign}{text}"
+
+    @classmethod
+    def _format_token_breakdown(cls, value: Any) -> str:
+        if not isinstance(value, dict):
+            return "--"
+        parts = [
+            ("I", value.get("input", 0)),
+            ("O", value.get("output", 0)),
+            ("CR", value.get("cache_read", 0)),
+            ("CW", value.get("cache_write", 0)),
+        ]
+        return "  ".join(
+            f"{label} {cls._format_compact_int(amount)}" for label, amount in parts
+        )
 
     @staticmethod
     def _human_age(updated_at: int) -> str:

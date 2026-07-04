@@ -206,6 +206,27 @@ def summarize_cursor_window(
     return cursor.summarize_rows(window_rows)
 
 
+def selected_claude_token_breakdown(summary: dict[str, Any]) -> dict[str, int]:
+    totals = summary["totals"]
+    return {
+        "input": int(totals["input_tokens"]),
+        "output": int(totals["output_tokens"]),
+        "cache_read": int(totals["cache_read_input_tokens"]),
+        "cache_write": int(totals["cache_write_5m_input_tokens"])
+        + int(totals["cache_write_1h_input_tokens"]),
+    }
+
+
+def selected_cursor_token_breakdown(summary: dict[str, Any]) -> dict[str, int]:
+    totals = summary["totals"]
+    return {
+        "input": int(totals["input_without_cache_write"]),
+        "output": int(totals["output_tokens"]),
+        "cache_read": int(totals["cache_read"]),
+        "cache_write": int(totals["input_with_cache_write"]),
+    }
+
+
 def collect_claude_data(now: datetime, graph_mode: str, exclude_subagents: bool) -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
     buckets, _ = bucket_range(now, graph_mode)
@@ -250,8 +271,7 @@ def collect_claude_data(now: datetime, graph_mode: str, exclude_subagents: bool)
         return (
             {
                 "selected_cost_usd": selected["spend"]["total_cost_usd"],
-                "selected_tokens": selected["totals"]["total_billed_tokens"],
-                "selected_responses": selected["totals"]["responses"],
+                "selected_token_breakdown": selected_claude_token_breakdown(selected),
                 "buckets": buckets_summary,
                 "parse_failures": parse_failures,
             },
@@ -262,8 +282,12 @@ def collect_claude_data(now: datetime, graph_mode: str, exclude_subagents: bool)
         return (
             {
                 "selected_cost_usd": "0",
-                "selected_tokens": 0,
-                "selected_responses": 0,
+                "selected_token_breakdown": {
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                },
                 "buckets": [
                     {
                         "start": bucket["start"].isoformat(),
@@ -313,8 +337,7 @@ def collect_cursor_data(now: datetime, graph_mode: str) -> tuple[dict[str, Any],
         return (
             {
                 "selected_cost_usd": selected["totals"]["reported_cost_usd"],
-                "selected_tokens": selected["totals"]["total_tokens"],
-                "selected_events": selected["totals"]["events"],
+                "selected_token_breakdown": selected_cursor_token_breakdown(selected),
                 "buckets": buckets_summary,
             },
             issues,
@@ -324,8 +347,12 @@ def collect_cursor_data(now: datetime, graph_mode: str) -> tuple[dict[str, Any],
         return (
             {
                 "selected_cost_usd": "0",
-                "selected_tokens": 0,
-                "selected_events": 0,
+                "selected_token_breakdown": {
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                },
                 "buckets": [
                     {
                         "start": bucket["start"].isoformat(),
@@ -364,10 +391,8 @@ def main() -> int:
             "claude_cost_usd": claude_data["selected_cost_usd"],
             "cursor_cost_usd": cursor_data["selected_cost_usd"],
             "total_cost_usd": decimal_text(total_selected),
-            "claude_tokens": claude_data["selected_tokens"],
-            "cursor_tokens": cursor_data["selected_tokens"],
-            "claude_responses": claude_data["selected_responses"],
-            "cursor_events": cursor_data["selected_events"],
+            "claude_token_breakdown": claude_data["selected_token_breakdown"],
+            "cursor_token_breakdown": cursor_data["selected_token_breakdown"],
         },
         "graph": {
             "mode": args.graph_mode,

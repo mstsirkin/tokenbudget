@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -138,6 +138,10 @@ def parse_when(value: str | None, *, end_of_day: bool = False) -> datetime | Non
     if not text:
         return None
 
+    keyword_dt = parse_relative_day_keyword(text, end_of_day=end_of_day)
+    if keyword_dt is not None:
+        return keyword_dt
+
     try:
         return parse_iso_value(text, end_of_day=end_of_day)
     except ValueError:
@@ -154,6 +158,19 @@ def parse_when(value: str | None, *, end_of_day: bool = False) -> datetime | Non
     if dt is None:
         raise ValueError(f"could not parse {value!r} as a date/time")
     return dt.astimezone(UTC)
+
+
+def parse_relative_day_keyword(text: str, *, end_of_day: bool) -> datetime | None:
+    offsets = {
+        "today": 0,
+        "yesterday": -1,
+        "tomorrow": 1,
+    }
+    offset = offsets.get(" ".join(text.lower().split()))
+    if offset is None:
+        return None
+    day = (datetime.now(tz=UTC) + timedelta(days=offset)).date()
+    return datetime.combine(day, time.max if end_of_day else time.min, tzinfo=UTC)
 
 
 def parse_iso_value(text: str, *, end_of_day: bool) -> datetime:
@@ -317,6 +334,16 @@ def format_decimal_usd(value: Decimal) -> str:
     return f"${value.quantize(Decimal('0.0001')):,}"
 
 
+def normalized_token_breakdown(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "input_tokens": data["input_without_cache_write"],
+        "cache_write_tokens": data["input_with_cache_write"],
+        "cache_read_tokens": data["cache_read"],
+        "output_tokens": data["output_tokens"],
+        "total_tokens": data["total_tokens"],
+    }
+
+
 def summarize_rows(rows: list[UsageRow]) -> dict[str, Any]:
     totals = {
         "events": len(rows),
@@ -374,6 +401,7 @@ def summarize_rows(rows: list[UsageRow]) -> dict[str, Any]:
             "output_tokens": data["output_tokens"],
             "total_tokens": data["total_tokens"],
             "reported_cost_usd": str(data["reported_cost_usd"]),
+            **normalized_token_breakdown(data),
         }
         for model, data in by_model.items()
     ]
@@ -396,8 +424,14 @@ def summarize_rows(rows: list[UsageRow]) -> dict[str, Any]:
         reverse=True,
     )
 
+    totals_json = {
+        **totals,
+        "reported_cost_usd": str(totals["reported_cost_usd"]),
+        **normalized_token_breakdown(totals),
+    }
+
     return {
-        "totals": {**totals, "reported_cost_usd": str(totals["reported_cost_usd"])},
+        "totals": totals_json,
         "by_kind": kind_rows,
         "by_model": model_rows,
         "date_range": {
@@ -428,9 +462,9 @@ def print_text_report(
     print()
 
     print("Totals")
-    print(f"  input (w/ cache write):  {format_int(totals['input_with_cache_write'])}")
-    print(f"  input (w/o cache write): {format_int(totals['input_without_cache_write'])}")
-    print(f"  cache read:              {format_int(totals['cache_read'])}")
+    print(f"  input:                   {format_int(totals['input_tokens'])}")
+    print(f"  cache write:             {format_int(totals['cache_write_tokens'])}")
+    print(f"  cache read:              {format_int(totals['cache_read_tokens'])}")
     print(f"  output:                  {format_int(totals['output_tokens'])}")
     print(f"  total tokens:            {format_int(totals['total_tokens'])}")
     print(f"  reported cost:           {format_decimal_usd(Decimal(totals['reported_cost_usd']))}")

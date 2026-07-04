@@ -203,6 +203,7 @@ class TokenbudgetWindow(QWidget):
         self._pinned = self.settings.value("pinned", True, type=bool)
         self._quit_requested = False
         self.tray_icon: QSystemTrayIcon | None = None
+        self._snapshot_cache: dict[str, Any] | None = None
 
         self.process = QProcess(self)
         self.process.finished.connect(self._handle_snapshot_finished)
@@ -518,12 +519,25 @@ class TokenbudgetWindow(QWidget):
             self.subtitle_label.setText("Refresh error")
             self.status_label.show()
             return
+        self._snapshot_cache = snapshot
         self._apply_snapshot(snapshot)
 
     def _apply_snapshot(self, snapshot: dict[str, Any]) -> None:
-        selected = snapshot.get("selected", {})
-        graph_meta = snapshot.get("graph", {})
-        graphs = snapshot.get("graphs", {})
+        modes = snapshot.get("modes")
+        if isinstance(modes, dict):
+            mode_payload = modes.get(self.graph_mode)
+            if isinstance(mode_payload, dict):
+                selected = mode_payload.get("selected", {})
+                graph_meta = mode_payload.get("graph", {})
+                graphs = mode_payload.get("graphs", {})
+            else:
+                selected = {}
+                graph_meta = {}
+                graphs = {}
+        else:
+            selected = snapshot.get("selected", {})
+            graph_meta = snapshot.get("graph", {})
+            graphs = snapshot.get("graphs", {})
 
         selected_label = str(selected.get("label", "Selected period"))
         self.period_total_label.setText(f"{selected_label} total")
@@ -588,6 +602,9 @@ class TokenbudgetWindow(QWidget):
             return
         self.graph_mode = mode
         self.settings.setValue("graph_mode", mode)
+        if self._snapshot_cache is not None and isinstance(self._snapshot_cache.get("modes"), dict):
+            self._apply_snapshot(self._snapshot_cache)
+            return
         self.request_snapshot(force=True)
 
     def _restore_position(self) -> None:

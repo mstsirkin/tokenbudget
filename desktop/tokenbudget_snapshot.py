@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Direct on-demand snapshot for the Qt tokenbudget monitor."""
+"""Combine backend all-mode payloads for the Qt tokenbudget monitor."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,45 +21,15 @@ import claude_usage_costs as claude
 import cursor_agent_usage_costs as cursor
 
 
-ZERO = Decimal("0")
-
-GRAPH_MODES: dict[str, dict[str, Any]] = {
-    "hourly": {
-        "count": 24,
-        "title": "Last 24 hourly buckets",
-        "unit_suffix": "h",
-        "note": "Each point is one local-hour bucket. The newest bucket may be partial.",
-    },
-    "daily": {
-        "count": 14,
-        "title": "Last 14 daily buckets",
-        "unit_suffix": "day",
-        "note": "Each point is one local-day bucket. Today's bucket may be partial.",
-    },
-    "weekly": {
-        "count": 12,
-        "title": "Last 12 weekly buckets",
-        "unit_suffix": "week",
-        "note": "Each point is one local-week bucket starting on Monday. This week's bucket may be partial.",
-    },
-    "monthly": {
-        "count": 12,
-        "title": "Last 12 monthly buckets",
-        "unit_suffix": "month",
-        "note": "Each point is one local-month bucket. This month's bucket may be partial.",
-    },
-}
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compute a direct tokenbudget snapshot with hourly buckets."
+        description="Compute a tokenbudget snapshot from backend all-mode summaries."
     )
     parser.add_argument(
         "--graph-mode",
-        choices=tuple(GRAPH_MODES),
+        choices=tuple(cursor.GRAPH_MODES),
         default="hourly",
-        help="Bucket mode to compute for the graphs (default: hourly).",
+        help="Default mode to expose in the legacy top-level fields (default: hourly).",
     )
     parser.add_argument(
         "--exclude-subagents",
@@ -73,166 +43,16 @@ def decimal_text(value: Decimal) -> str:
     return str(value)
 
 
-def start_of_bucket(dt: datetime, mode: str) -> datetime:
-    if mode == "hourly":
-        return dt.replace(minute=0, second=0, microsecond=0)
-    if mode == "daily":
-        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    if mode == "weekly":
-        day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        return day_start - timedelta(days=day_start.weekday())
-    if mode == "monthly":
-        return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    raise ValueError(f"unsupported graph mode {mode!r}")
+def empty_claude_payload(now: datetime) -> dict[str, Any]:
+    return claude.build_all_modes_payload([], {}, now)
 
 
-def add_months(dt: datetime, months: int) -> datetime:
-    month_index = (dt.month - 1) + months
-    year = dt.year + month_index // 12
-    month = (month_index % 12) + 1
-    return dt.replace(year=year, month=month, day=1)
+def empty_cursor_payload(now: datetime) -> dict[str, Any]:
+    return cursor.build_all_modes_payload([], now)
 
 
-def shift_bucket(dt: datetime, mode: str, steps: int) -> datetime:
-    if mode == "hourly":
-        return dt + timedelta(hours=steps)
-    if mode == "daily":
-        return dt + timedelta(days=steps)
-    if mode == "weekly":
-        return dt + timedelta(weeks=steps)
-    if mode == "monthly":
-        return add_months(dt, steps)
-    raise ValueError(f"unsupported graph mode {mode!r}")
-
-
-def bucket_label(dt: datetime, mode: str) -> str:
-    if mode == "hourly":
-        return dt.strftime("%a %H:%M")
-    if mode == "daily":
-        return dt.strftime("%b %d")
-    if mode == "weekly":
-        return dt.strftime("wk %b %d")
-    if mode == "monthly":
-        return dt.strftime("%b %Y")
-    raise ValueError(f"unsupported graph mode {mode!r}")
-
-
-def bucket_range(now: datetime, mode: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    config = GRAPH_MODES[mode]
-    count = int(config["count"])
-    current_bucket_start = start_of_bucket(now, mode)
-    first_bucket_start = shift_bucket(current_bucket_start, mode, -(count - 1))
-    buckets: list[dict[str, Any]] = []
-    for index in range(count):
-        bucket_start = shift_bucket(first_bucket_start, mode, index)
-        bucket_end = min(shift_bucket(bucket_start, mode, 1), now)
-        buckets.append(
-            {
-                "start": bucket_start,
-                "end": bucket_end,
-                "label": bucket_label(bucket_start, mode),
-            }
-        )
-    return buckets, config
-
-
-def selected_window(now: datetime, mode: str) -> tuple[str, datetime, datetime]:
-    start = start_of_bucket(now, mode)
-    labels = {
-        "hourly": "This hour",
-        "daily": "Today",
-        "weekly": "This week",
-        "monthly": "This month",
-    }
-    return labels[mode], start, now
-
-
-def in_window(timestamp: datetime | None, start: datetime, end: datetime, *, inclusive_end: bool) -> bool:
-    if timestamp is None:
-        return False
-    if timestamp < start:
-        return False
-    if inclusive_end:
-        return timestamp <= end
-    return timestamp < end
-
-
-def filter_claude_events(
-    events: list[claude.UsageEvent],
-    start: datetime,
-    end: datetime,
-    *,
-    inclusive_end: bool,
-) -> list[claude.UsageEvent]:
-    return [
-        event
-        for event in events
-        if in_window(event.timestamp, start, end, inclusive_end=inclusive_end)
-    ]
-
-
-def filter_cursor_rows(
-    rows: list[cursor.UsageRow],
-    start: datetime,
-    end: datetime,
-    *,
-    inclusive_end: bool,
-) -> list[cursor.UsageRow]:
-    return [
-        row for row in rows if in_window(row.timestamp, start, end, inclusive_end=inclusive_end)
-    ]
-
-
-def summarize_claude_window(
-    events: list[claude.UsageEvent],
-    pricing_data: dict[str, Any],
-    start: datetime,
-    end: datetime,
-    *,
-    inclusive_end: bool,
-) -> dict[str, Any]:
-    window_events = filter_claude_events(events, start, end, inclusive_end=inclusive_end)
-    return claude.summarize(window_events, pricing_data)
-
-
-def summarize_cursor_window(
-    rows: list[cursor.UsageRow],
-    start: datetime,
-    end: datetime,
-    *,
-    inclusive_end: bool,
-) -> dict[str, Any]:
-    window_rows = filter_cursor_rows(rows, start, end, inclusive_end=inclusive_end)
-    return cursor.summarize_rows(window_rows)
-
-
-def selected_claude_token_breakdown(summary: dict[str, Any]) -> dict[str, int]:
-    totals = summary["totals"]
-    return {
-        "input": int(totals["input_tokens"]),
-        "output": int(totals["output_tokens"]),
-        "cache_read": int(totals["cache_read_input_tokens"]),
-        "cache_write": int(totals["cache_write_5m_input_tokens"])
-        + int(totals["cache_write_1h_input_tokens"]),
-    }
-
-
-def selected_cursor_token_breakdown(summary: dict[str, Any]) -> dict[str, int]:
-    totals = summary["totals"]
-    return {
-        "input": int(totals["input_without_cache_write"]),
-        "output": int(totals["output_tokens"]),
-        "cache_read": int(totals["cache_read"]),
-        "cache_write": int(totals["input_with_cache_write"]),
-    }
-
-
-def collect_claude_data(now: datetime, graph_mode: str, exclude_subagents: bool) -> tuple[dict[str, Any], list[str]]:
+def collect_claude_payload(now: datetime, exclude_subagents: bool) -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
-    buckets, _ = bucket_range(now, graph_mode)
-    _, selected_start, selected_end = selected_window(now, graph_mode)
-    since = min(selected_start, buckets[0]["start"])
-
     try:
         pricing_args = SimpleNamespace(
             pricing_file=None,
@@ -244,166 +64,100 @@ def collect_claude_data(now: datetime, graph_mode: str, exclude_subagents: bool)
         events, parse_failures = claude.load_usage_events(
             root=claude.DEFAULT_TRANSCRIPTS_ROOT,
             exclude_subagents=exclude_subagents,
-            since=since,
+            since=claude.all_modes_start(now),
             until=now,
         )
-        selected = summarize_claude_window(
-            events, pricing_data, selected_start, selected_end, inclusive_end=True
-        )
-        buckets_summary = [
-            {
-                "start": bucket["start"].isoformat(),
-                "end": bucket["end"].isoformat(),
-                "label": bucket["label"],
-                "cost_usd": bucket_summary["spend"]["total_cost_usd"],
-            }
-            for bucket in buckets
-            for bucket_summary in [
-                summarize_claude_window(
-                    events,
-                    pricing_data,
-                    bucket["start"],
-                    bucket["end"],
-                    inclusive_end=(bucket["end"] == now),
-                )
-            ]
-        ]
-        return (
-            {
-                "selected_cost_usd": selected["spend"]["total_cost_usd"],
-                "selected_token_breakdown": selected_claude_token_breakdown(selected),
-                "buckets": buckets_summary,
-                "parse_failures": parse_failures,
-            },
-            issues,
-        )
+        payload = claude.build_all_modes_payload(events, pricing_data, now)
+        payload["parse_failures"] = parse_failures
+        return payload, issues
     except Exception as exc:  # pragma: no cover - surfaced to UI
         issues.append(f"Claude: {exc}")
-        return (
-            {
-                "selected_cost_usd": "0",
-                "selected_token_breakdown": {
-                    "input": 0,
-                    "output": 0,
-                    "cache_read": 0,
-                    "cache_write": 0,
-                },
-                "buckets": [
-                    {
-                        "start": bucket["start"].isoformat(),
-                        "end": bucket["end"].isoformat(),
-                        "label": bucket["label"],
-                        "cost_usd": "0",
-                    }
-                    for bucket in buckets
-                ],
-                "parse_failures": 0,
-            },
-            issues,
-        )
+        return empty_claude_payload(now), issues
 
 
-def collect_cursor_data(now: datetime, graph_mode: str) -> tuple[dict[str, Any], list[str]]:
+def collect_cursor_payload(now: datetime) -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
-    buckets, _ = bucket_range(now, graph_mode)
-    _, selected_start, selected_end = selected_window(now, graph_mode)
-
     try:
         csv_args = SimpleNamespace(
             auth_file=cursor.get_default_auth_path(),
             csv_file=None,
             save_csv=None,
         )
-        csv_text = cursor.load_csv_text(csv_args)
-        rows = cursor.parse_csv_rows(csv_text)
-        selected = summarize_cursor_window(rows, selected_start, selected_end, inclusive_end=True)
-        buckets_summary = [
-            {
-                "start": bucket["start"].isoformat(),
-                "end": bucket["end"].isoformat(),
-                "label": bucket["label"],
-                "cost_usd": bucket_summary["totals"]["reported_cost_usd"],
-            }
-            for bucket in buckets
-            for bucket_summary in [
-                summarize_cursor_window(
-                    rows,
-                    bucket["start"],
-                    bucket["end"],
-                    inclusive_end=(bucket["end"] == now),
-                )
-            ]
-        ]
-        return (
-            {
-                "selected_cost_usd": selected["totals"]["reported_cost_usd"],
-                "selected_token_breakdown": selected_cursor_token_breakdown(selected),
-                "buckets": buckets_summary,
-            },
-            issues,
-        )
+        rows = cursor.parse_csv_rows(cursor.load_csv_text(csv_args))
+        return cursor.build_all_modes_payload(rows, now), issues
     except Exception as exc:  # pragma: no cover - surfaced to UI
         issues.append(f"Cursor: {exc}")
-        return (
-            {
-                "selected_cost_usd": "0",
-                "selected_token_breakdown": {
-                    "input": 0,
-                    "output": 0,
-                    "cache_read": 0,
-                    "cache_write": 0,
-                },
-                "buckets": [
-                    {
-                        "start": bucket["start"].isoformat(),
-                        "end": bucket["end"].isoformat(),
-                        "label": bucket["label"],
-                        "cost_usd": "0",
-                    }
-                    for bucket in buckets
-                ],
-            },
-            issues,
-        )
+        return empty_cursor_payload(now), issues
+
+
+def combine_mode_payload(
+    mode: str,
+    claude_mode: dict[str, Any],
+    cursor_mode: dict[str, Any],
+) -> dict[str, Any]:
+    claude_selected = claude_mode.get("selected", {})
+    cursor_selected = cursor_mode.get("selected", {})
+    total_selected = Decimal(str(claude_selected.get("cost_usd", "0"))) + Decimal(
+        str(cursor_selected.get("cost_usd", "0"))
+    )
+    graph_meta = claude_mode.get("graph") or cursor_mode.get("graph") or {
+        "mode": mode,
+        "title": cursor.GRAPH_MODES[mode]["title"],
+        "unit_suffix": cursor.GRAPH_MODES[mode]["unit_suffix"],
+        "note": cursor.GRAPH_MODES[mode]["note"],
+    }
+    label = (
+        claude_selected.get("label")
+        or cursor_selected.get("label")
+        or str(cursor.GRAPH_MODES[mode]["selected_label"])
+    )
+    return {
+        "selected": {
+            "label": label,
+            "claude_cost_usd": str(claude_selected.get("cost_usd", "0")),
+            "cursor_cost_usd": str(cursor_selected.get("cost_usd", "0")),
+            "total_cost_usd": decimal_text(total_selected),
+            "claude_token_breakdown": claude_selected.get(
+                "token_breakdown",
+                {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+            ),
+            "cursor_token_breakdown": cursor_selected.get(
+                "token_breakdown",
+                {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+            ),
+        },
+        "graph": graph_meta,
+        "graphs": {
+            "claude": claude_mode.get("buckets", []),
+            "cursor": cursor_mode.get("buckets", []),
+        },
+    }
 
 
 def main() -> int:
     args = parse_args()
     now = datetime.now().astimezone()
-    graph_meta = GRAPH_MODES[args.graph_mode]
-    selected_label, _, _ = selected_window(now, args.graph_mode)
-    claude_data, claude_issues = collect_claude_data(
-        now, graph_mode=args.graph_mode, exclude_subagents=args.exclude_subagents
+    claude_payload, claude_issues = collect_claude_payload(
+        now, exclude_subagents=args.exclude_subagents
     )
-    cursor_data, cursor_issues = collect_cursor_data(now, graph_mode=args.graph_mode)
-
-    total_selected = Decimal(str(claude_data["selected_cost_usd"])) + Decimal(
-        str(cursor_data["selected_cost_usd"])
-    )
-
+    cursor_payload, cursor_issues = collect_cursor_payload(now)
     issues = claude_issues + cursor_issues
+
+    modes = {
+        mode: combine_mode_payload(
+            mode,
+            claude_payload.get("modes", {}).get(mode, {}),
+            cursor_payload.get("modes", {}).get(mode, {}),
+        )
+        for mode in cursor.GRAPH_MODES
+    }
+
     payload = {
         "updated_at": int(now.timestamp()),
         "status": "ok" if not issues else "degraded",
         "issues": issues,
-        "selected": {
-            "label": selected_label,
-            "claude_cost_usd": claude_data["selected_cost_usd"],
-            "cursor_cost_usd": cursor_data["selected_cost_usd"],
-            "total_cost_usd": decimal_text(total_selected),
-            "claude_token_breakdown": claude_data["selected_token_breakdown"],
-            "cursor_token_breakdown": cursor_data["selected_token_breakdown"],
-        },
-        "graph": {
-            "mode": args.graph_mode,
-            "title": graph_meta["title"],
-            "unit_suffix": graph_meta["unit_suffix"],
-            "note": graph_meta["note"],
-        },
-        "graphs": {
-            "claude": claude_data["buckets"],
-            "cursor": cursor_data["buckets"],
-        },
+        "modes": modes,
+        **modes[args.graph_mode],
     }
     print(json.dumps(payload, sort_keys=True))
     return 0

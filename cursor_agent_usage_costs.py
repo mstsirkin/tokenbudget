@@ -28,6 +28,36 @@ from typing import Any
 USAGE_CSV_URL = "https://cursor.com/api/dashboard/export-usage-events-csv?strategy=tokens"
 LOCAL_TZINFO = datetime.now().astimezone().tzinfo or UTC
 LOCAL_TZNAME = str(LOCAL_TZINFO)
+GRAPH_MODES: dict[str, dict[str, Any]] = {
+    "hourly": {
+        "count": 24,
+        "title": "Last 24 hourly buckets",
+        "unit_suffix": "h",
+        "note": "Each point is one local-hour bucket. The newest bucket may be partial.",
+        "selected_label": "This hour",
+    },
+    "daily": {
+        "count": 14,
+        "title": "Last 14 daily buckets",
+        "unit_suffix": "day",
+        "note": "Each point is one local-day bucket. Today's bucket may be partial.",
+        "selected_label": "Today",
+    },
+    "weekly": {
+        "count": 12,
+        "title": "Last 12 weekly buckets",
+        "unit_suffix": "week",
+        "note": "Each point is one local-week bucket starting on Monday. This week's bucket may be partial.",
+        "selected_label": "This week",
+    },
+    "monthly": {
+        "count": 12,
+        "title": "Last 12 monthly buckets",
+        "unit_suffix": "month",
+        "note": "Each point is one local-month bucket. This month's bucket may be partial.",
+        "selected_label": "This month",
+    },
+}
 
 
 @dataclass
@@ -115,7 +145,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Emit machine-readable JSON instead of a text report.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--all",
+        dest="all_modes",
+        action="store_true",
+        help="With --json, emit standard hourly/daily/weekly/monthly stats and buckets.",
+    )
+    args = parser.parse_args()
+    if args.all_modes and not args.json:
+        parser.error("--all requires --json")
+    if args.all_modes and (args.since or args.until):
+        parser.error("--all cannot be combined with --since/--until")
+    return args
 
 
 def parse_csv_timestamp(value: str) -> datetime | None:
@@ -334,6 +375,99 @@ def filter_rows(rows: list[UsageRow], args: argparse.Namespace) -> list[UsageRow
     return result
 
 
+def start_of_bucket(dt: datetime, mode: str) -> datetime:
+    if mode == "hourly":
+        return dt.replace(minute=0, second=0, microsecond=0)
+    if mode == "daily":
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    if mode == "weekly":
+        day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        return day_start - timedelta(days=day_start.weekday())
+    if mode == "monthly":
+        return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    raise ValueError(f"unsupported graph mode {mode!r}")
+
+
+def add_months(dt: datetime, months: int) -> datetime:
+    month_index = (dt.month - 1) + months
+    year = dt.year + month_index // 12
+    month = (month_index % 12) + 1
+    return dt.replace(year=year, month=month, day=1)
+
+
+def shift_bucket(dt: datetime, mode: str, steps: int) -> datetime:
+    if mode == "hourly":
+        return dt + timedelta(hours=steps)
+    if mode == "daily":
+        return dt + timedelta(days=steps)
+    if mode == "weekly":
+        return dt + timedelta(weeks=steps)
+    if mode == "monthly":
+        return add_months(dt, steps)
+    raise ValueError(f"unsupported graph mode {mode!r}")
+
+
+def bucket_label(dt: datetime, mode: str) -> str:
+    if mode == "hourly":
+        return dt.strftime("%a %H:%M")
+    if mode == "daily":
+        return dt.strftime("%b %d")
+    if mode == "weekly":
+        return dt.strftime("wk %b %d")
+    if mode == "monthly":
+        return dt.strftime("%b %Y")
+    raise ValueError(f"unsupported graph mode {mode!r}")
+
+
+def bucket_range(now: datetime, mode: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    config = GRAPH_MODES[mode]
+    count = int(config["count"])
+    current_bucket_start = start_of_bucket(now, mode)
+    first_bucket_start = shift_bucket(current_bucket_start, mode, -(count - 1))
+    buckets: list[dict[str, Any]] = []
+    for index in range(count):
+        bucket_start = shift_bucket(first_bucket_start, mode, index)
+        bucket_end = min(shift_bucket(bucket_start, mode, 1), now)
+        buckets.append(
+            {
+                "start": bucket_start,
+                "end": bucket_end,
+                "label": bucket_label(bucket_start, mode),
+            }
+        )
+    return buckets, config
+
+
+def selected_window(now: datetime, mode: str) -> tuple[str, datetime, datetime]:
+    start = start_of_bucket(now, mode)
+    return str(GRAPH_MODES[mode]["selected_label"]), start, now
+
+
+def in_window(timestamp: datetime | None, start: datetime, end: datetime, *, inclusive_end: bool) -> bool:
+    if timestamp is None:
+        return False
+    if timestamp < start:
+        return False
+    if inclusive_end:
+        return timestamp <= end
+    return timestamp < end
+
+
+def filter_rows_window(
+    rows: list[UsageRow],
+    start: datetime,
+    end: datetime,
+    *,
+    inclusive_end: bool,
+) -> list[UsageRow]:
+    return [row for row in rows if in_window(row.timestamp, start, end, inclusive_end=inclusive_end)]
+
+
+def all_modes_start(now: datetime) -> datetime:
+    monthly_count = int(GRAPH_MODES["monthly"]["count"])
+    return shift_bucket(start_of_bucket(now, "monthly"), "monthly", -(monthly_count - 1))
+
+
 def format_int(value: int) -> str:
     return f"{value:,}"
 
@@ -449,6 +583,72 @@ def summarize_rows(rows: list[UsageRow]) -> dict[str, Any]:
     }
 
 
+def selected_cursor_token_breakdown(summary: dict[str, Any]) -> dict[str, int]:
+    totals = summary["totals"]
+    return {
+        "input": int(totals["input_tokens"]),
+        "output": int(totals["output_tokens"]),
+        "cache_read": int(totals["cache_read_tokens"]),
+        "cache_write": int(totals["cache_write_tokens"]),
+    }
+
+
+def build_mode_payload(rows: list[UsageRow], now: datetime, mode: str) -> dict[str, Any]:
+    buckets, config = bucket_range(now, mode)
+    selected_label, selected_start, selected_end = selected_window(now, mode)
+    selected = summarize_rows(
+        filter_rows_window(rows, selected_start, selected_end, inclusive_end=True)
+    )
+    bucket_summaries = [
+        {
+            "start": bucket["start"].isoformat(),
+            "end": bucket["end"].isoformat(),
+            "label": bucket["label"],
+            "cost_usd": bucket_summary["totals"]["reported_cost_usd"],
+        }
+        for bucket in buckets
+        for bucket_summary in [
+            summarize_rows(
+                filter_rows_window(
+                    rows,
+                    bucket["start"],
+                    bucket["end"],
+                    inclusive_end=(bucket["end"] == now),
+                )
+            )
+        ]
+    ]
+    return {
+        "selected": {
+            "label": selected_label,
+            "start": selected_start.isoformat(),
+            "end": selected_end.isoformat(),
+            "cost_usd": selected["totals"]["reported_cost_usd"],
+            "token_breakdown": selected_cursor_token_breakdown(selected),
+            "events": int(selected["totals"]["events"]),
+        },
+        "graph": {
+            "mode": mode,
+            "title": str(config["title"]),
+            "unit_suffix": str(config["unit_suffix"]),
+            "note": str(config["note"]),
+        },
+        "buckets": bucket_summaries,
+    }
+
+
+def build_all_modes_payload(rows: list[UsageRow], now: datetime | None = None) -> dict[str, Any]:
+    if now is None:
+        now = datetime.now().astimezone()
+    relevant_rows = filter_rows_window(rows, all_modes_start(now), now, inclusive_end=True)
+    return {
+        "updated_at": int(now.timestamp()),
+        "modes": {
+            mode: build_mode_payload(relevant_rows, now, mode) for mode in GRAPH_MODES
+        },
+    }
+
+
 def print_text_report(
     summary: dict[str, Any],
     *,
@@ -501,10 +701,29 @@ def main() -> int:
     args = parse_args()
     csv_text = load_csv_text(args)
     all_rows = parse_csv_rows(csv_text)
+    source = str(args.csv_file) if args.csv_file else USAGE_CSV_URL
+
+    if args.all_modes:
+        now = datetime.now().astimezone()
+        filtered_rows = filter_rows(all_rows, args)
+        payload = {
+            "source": source,
+            "rows_total": len(all_rows),
+            "rows_used": len(
+                filter_rows_window(
+                    filtered_rows,
+                    all_modes_start(now),
+                    now,
+                    inclusive_end=True,
+                )
+            ),
+            **build_all_modes_payload(filtered_rows, now),
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
     rows = filter_rows(all_rows, args)
     summary = summarize_rows(rows)
-
-    source = str(args.csv_file) if args.csv_file else USAGE_CSV_URL
 
     if args.json:
         print(

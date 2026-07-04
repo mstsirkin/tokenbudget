@@ -23,3 +23,38 @@ or natural-language expressions such as `2026-07-03`, `yesterday`, and
 
 Natural-language parsing uses the Python `dateparser` package. On Fedora, install
 it with `sudo dnf install python3-dateparser`.
+
+## Qt Monitor
+
+There is also a native Qt monitor under `desktop/` for a draggable transparent
+desktop widget.
+
+Install PySide6 on Fedora:
+
+```bash
+dnf install -y python3-pyside6
+```
+
+Then launch it:
+
+```bash
+./desktop/run-tokenbudget-qt.sh
+```
+
+The Qt monitor:
+
+- can be dragged by its header and remembers its position
+- stays transparent and borderless
+- computes its graph data directly on refresh with no local usage cache
+- shows two graphs, one for Claude buckets and one for Cursor buckets
+- lets you switch the graph mode between `hourly`, `daily`, `weekly`, and `monthly`
+- adds a tray icon on desktops that support system trays, with show/raise, hide, pin, refresh, and quit actions
+
+Useful options:
+
+- `./desktop/run-tokenbudget-qt.sh --poll-seconds 60`
+- `./desktop/run-tokenbudget-qt.sh --graph-mode hourly`
+
+Right-click the widget for refresh, always-on-top, reset-position, and quit.
+Closing the window hides it to the tray when a tray is available; use the tray
+menu's `Quit` action to exit fully.

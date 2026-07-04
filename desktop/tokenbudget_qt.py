@@ -212,6 +212,8 @@ class TokenbudgetWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._apply_window_flags()
         self.resize(WINDOW_SIZE)
+        self.setMinimumWidth(WINDOW_SIZE.width())
+        self.setMaximumWidth(WINDOW_SIZE.width())
 
         self._build_ui()
         self._restore_position()
@@ -447,12 +449,19 @@ class TokenbudgetWindow(QWidget):
         self.cursor_tokens_label, self.cursor_tokens_value = self._add_metric(metrics, 4, "Cursor tokens")
         card_layout.addLayout(metrics)
 
+        text_block_width = WINDOW_SIZE.width() - 40
+
         self.graph_title = QLabel("Last 24 hourly buckets", self.card)
         self.graph_title.setStyleSheet("font-size: 12px; font-weight: 600; color: #c0c8d6;")
+        self.graph_title.setMaximumWidth(text_block_width)
+        self.graph_title.setFixedHeight(18)
         card_layout.addWidget(self.graph_title)
 
         self.graph_note = QLabel("Each point is one hourly bucket, computed directly on refresh.", self.card)
         self.graph_note.setStyleSheet("color: #8f9db0; font-size: 11px;")
+        self.graph_note.setWordWrap(True)
+        self.graph_note.setMaximumWidth(text_block_width)
+        self.graph_note.setFixedHeight(32)
         card_layout.addWidget(self.graph_note)
 
         self.claude_graph = SpendHistoryGraph("Claude", "#66c2ff", self.card)

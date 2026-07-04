@@ -17,7 +17,13 @@ Fetches Cursor Agent usage as a CSV export from Cursor's dashboard API or reads
 from a saved CSV file, then summarizes token totals and reported cost by event
 kind and model.
 
-Both scripts accept `--since` and `--until` filters using ISO-8601 timestamps
+### `gemini_usage_costs.py`
+
+Scans local Gemini CLI session files under `~/.gemini`, estimates spend using
+Google pricing from `models.dev`, and reports input, cached-read, and output
+usage for the same hourly/daily/weekly/monthly monitor modes.
+
+All scripts accept `--since` and `--until` filters using ISO-8601 timestamps
 or natural-language expressions such as `2026-07-03`, `yesterday`, and
 `1 hour ago`.
 
@@ -58,12 +64,13 @@ Useful options:
 Optional monitor config lives in `~/.config/tokenbudget/qt-monitor.rc.py`. Example:
 
 ```python
-SCALE = Decimal("10")
+SCALE = 2  # correct token double counting
 DISABLED_PROVIDERS = {"cursor"}
 ```
 
 All providers are enabled by default. Set `DISABLED_PROVIDERS` to any of
-`claude` and `cursor` to hide them and skip their backend refresh work.
+`claude`, `cursor`, and `gemini` to hide them and skip their backend refresh
+work.
 
 Right-click the widget for refresh, always-on-top, reset-position, and quit.
 Closing the window hides it to the tray when a tray is available; use the tray

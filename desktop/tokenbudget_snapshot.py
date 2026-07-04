@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import claude_usage_costs as claude
 import cursor_agent_usage_costs as cursor
+import gemini_usage_costs as gemini
 from desktop.tokenbudget_config import CONFIG, PROVIDER_LABELS, SUPPORTED_PROVIDERS
 
 
@@ -51,6 +52,10 @@ def empty_claude_payload(now: datetime) -> dict[str, Any]:
 
 def empty_cursor_payload(now: datetime) -> dict[str, Any]:
     return cursor.build_all_modes_payload([], now)
+
+
+def empty_gemini_payload(now: datetime) -> dict[str, Any]:
+    return gemini.build_all_modes_payload([], {}, now)
 
 
 def collect_claude_payload(now: datetime, exclude_subagents: bool) -> tuple[dict[str, Any], list[str]]:
@@ -92,47 +97,76 @@ def collect_cursor_payload(now: datetime) -> tuple[dict[str, Any], list[str]]:
         return empty_cursor_payload(now), issues
 
 
+def collect_gemini_payload(now: datetime) -> tuple[dict[str, Any], list[str]]:
+    issues: list[str] = []
+    try:
+        pricing_args = SimpleNamespace(
+            pricing_file=None,
+            cache_file=gemini.DEFAULT_CACHE_PATH,
+            offline=gemini.DEFAULT_CACHE_PATH.exists(),
+            pricing_url=gemini.DEFAULT_PRICING_URL,
+        )
+        pricing_data = gemini.fetch_pricing_json(pricing_args)
+        events, parse_failures, files_scanned = gemini.load_usage_events(
+            root=gemini.DEFAULT_GEMINI_ROOT,
+            since=gemini.all_modes_start(now),
+            until=now,
+        )
+        payload = gemini.build_all_modes_payload(events, pricing_data, now)
+        payload["parse_failures"] = parse_failures
+        payload["files_scanned"] = files_scanned
+        return payload, issues
+    except Exception as exc:  # pragma: no cover - surfaced to UI
+        issues.append(f"Gemini: {exc}")
+        return empty_gemini_payload(now), issues
+
+
 def combine_mode_payload(
     mode: str,
-    claude_mode: dict[str, Any],
-    cursor_mode: dict[str, Any],
+    provider_modes: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    claude_selected = claude_mode.get("selected", {})
-    cursor_selected = cursor_mode.get("selected", {})
-    total_selected = Decimal(str(claude_selected.get("cost_usd", "0"))) + Decimal(
-        str(cursor_selected.get("cost_usd", "0"))
-    )
-    graph_meta = claude_mode.get("graph") or cursor_mode.get("graph") or {
+    total_selected = Decimal("0")
+    graph_meta: dict[str, Any] | None = None
+    label: str | None = None
+    selected_payload: dict[str, Any] = {}
+    graphs_payload: dict[str, Any] = {}
+
+    for provider in SUPPORTED_PROVIDERS:
+        provider_mode = provider_modes.get(provider, {})
+        selected = provider_mode.get("selected", {})
+        if not graph_meta:
+            candidate_graph_meta = provider_mode.get("graph")
+            if isinstance(candidate_graph_meta, dict):
+                graph_meta = candidate_graph_meta
+        if label is None:
+            candidate_label = selected.get("label")
+            if isinstance(candidate_label, str) and candidate_label:
+                label = candidate_label
+        cost_usd = Decimal(str(selected.get("cost_usd", "0")))
+        total_selected += cost_usd
+        selected_payload[f"{provider}_cost_usd"] = str(selected.get("cost_usd", "0"))
+        selected_payload[f"{provider}_token_breakdown"] = selected.get(
+            "token_breakdown",
+            {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+        )
+        graphs_payload[provider] = provider_mode.get("buckets", [])
+
+    if graph_meta is None:
+        graph_meta = {
         "mode": mode,
         "title": cursor.GRAPH_MODES[mode]["title"],
         "unit_suffix": cursor.GRAPH_MODES[mode]["unit_suffix"],
         "note": cursor.GRAPH_MODES[mode]["note"],
     }
-    label = (
-        claude_selected.get("label")
-        or cursor_selected.get("label")
-        or str(cursor.GRAPH_MODES[mode]["selected_label"])
-    )
+
     return {
         "selected": {
-            "label": label,
-            "claude_cost_usd": str(claude_selected.get("cost_usd", "0")),
-            "cursor_cost_usd": str(cursor_selected.get("cost_usd", "0")),
+            "label": label or str(cursor.GRAPH_MODES[mode]["selected_label"]),
             "total_cost_usd": decimal_text(total_selected),
-            "claude_token_breakdown": claude_selected.get(
-                "token_breakdown",
-                {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
-            ),
-            "cursor_token_breakdown": cursor_selected.get(
-                "token_breakdown",
-                {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
-            ),
+            **selected_payload,
         },
         "graph": graph_meta,
-        "graphs": {
-            "claude": claude_mode.get("buckets", []),
-            "cursor": cursor_mode.get("buckets", []),
-        },
+        "graphs": graphs_payload,
     }
 
 
@@ -140,32 +174,41 @@ def main() -> int:
     args = parse_args()
     now = datetime.now().astimezone()
     enabled_providers = set(CONFIG.enabled_providers())
+    provider_collectors = {
+        "claude": lambda: collect_claude_payload(now, args.exclude_subagents),
+        "cursor": lambda: collect_cursor_payload(now),
+        "gemini": lambda: collect_gemini_payload(now),
+    }
+    empty_payloads = {
+        "claude": empty_claude_payload(now),
+        "cursor": empty_cursor_payload(now),
+        "gemini": empty_gemini_payload(now),
+    }
+
     with ThreadPoolExecutor(max_workers=max(1, len(enabled_providers))) as executor:
-        claude_future = (
-            executor.submit(collect_claude_payload, now, args.exclude_subagents)
-            if "claude" in enabled_providers
-            else None
-        )
-        cursor_future = (
-            executor.submit(collect_cursor_payload, now)
-            if "cursor" in enabled_providers
-            else None
-        )
-        if claude_future is None:
-            claude_payload, claude_issues = empty_claude_payload(now), []
-        else:
-            claude_payload, claude_issues = claude_future.result()
-        if cursor_future is None:
-            cursor_payload, cursor_issues = empty_cursor_payload(now), []
-        else:
-            cursor_payload, cursor_issues = cursor_future.result()
-    issues = claude_issues + cursor_issues
+        futures = {
+            provider: executor.submit(collector)
+            for provider, collector in provider_collectors.items()
+            if provider in enabled_providers
+        }
+        provider_payloads: dict[str, dict[str, Any]] = {}
+        issues: list[str] = []
+        for provider in SUPPORTED_PROVIDERS:
+            future = futures.get(provider)
+            if future is None:
+                provider_payloads[provider] = empty_payloads[provider]
+                continue
+            payload, provider_issues = future.result()
+            provider_payloads[provider] = payload
+            issues.extend(provider_issues)
 
     modes = {
         mode: combine_mode_payload(
             mode,
-            claude_payload.get("modes", {}).get(mode, {}),
-            cursor_payload.get("modes", {}).get(mode, {}),
+            {
+                provider: provider_payloads[provider].get("modes", {}).get(mode, {})
+                for provider in SUPPORTED_PROVIDERS
+            },
         )
         for mode in cursor.GRAPH_MODES
     }

@@ -11,15 +11,16 @@ from typing import Any
 
 
 RC_PATH = Path.home() / ".config" / "tokenbudget" / "qt-monitor.rc.py"
-SUPPORTED_PROVIDERS = ("claude", "cursor")
+SUPPORTED_PROVIDERS = ("claude", "cursor", "gemini")
 PROVIDER_LABELS = {
     "claude": "Claude",
     "cursor": "Cursor",
+    "gemini": "Gemini",
 }
-DEFAULT_WINDOW_SIZE = (440, 540)
+DEFAULT_WINDOW_SIZE = (440, 690)
 # Example `~/.config/tokenbudget/qt-monitor.rc.py`:
-# SCALE = Decimal("10")
-# WINDOW_SIZE = (440, 540)
+# SCALE = 2  # correct token double counting
+# WINDOW_SIZE = (440, 690)
 # DISABLED_PROVIDERS = {"cursor"}
 
 

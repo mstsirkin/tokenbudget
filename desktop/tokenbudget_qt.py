@@ -39,10 +39,15 @@ except ModuleNotFoundError:
 SNAPSHOT_HELPER = REPO_ROOT / "desktop" / "tokenbudget_snapshot.py"
 SETTINGS_GROUP = "qt-monitor"
 WINDOW_SIZE = QSize(*CONFIG.window_size)
-MONEY_QUANTUM = Decimal("0.1")
-# Quick display-only workaround for suspected inflation.
+MONEY_QUANTUM = Decimal("0.01")
+# Quick display-only workaround for suspected token inflation.
 SCALE: Decimal | None = CONFIG.scale
 PROVIDER_ORDER = tuple(PROVIDER_LABELS)
+PROVIDER_GRAPH_COLORS = {
+    "claude": "#66c2ff",
+    "cursor": "#7fdc8a",
+    "gemini": "#e3b341",
+}
 GRAPH_MODE_LABELS = {
     "hourly": "Hourly",
     "daily": "Daily",
@@ -51,18 +56,18 @@ GRAPH_MODE_LABELS = {
 }
 
 
-def scaled_decimal(value: Any) -> Decimal:
+def decimal_value(value: Any) -> Decimal:
     try:
-        amount = Decimal(str(value))
+        return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return Decimal("0")
+
+
+def scaled_token_decimal(value: Any) -> Decimal:
+    amount = decimal_value(value)
     if SCALE is None or SCALE == 0:
         return amount
     return amount / SCALE
-
-
-def scaled_float(value: Any) -> float:
-    return float(scaled_decimal(value))
 
 
 class SpendHistoryGraph(QWidget):
@@ -471,8 +476,10 @@ class TokenbudgetWindow(QWidget):
         self.period_total_label, self.period_total_value = self._add_metric(metrics, 0, "Period total")
         self.claude_spend_label, self.claude_spend_value = self._add_metric(metrics, 1, "Claude spend")
         self.cursor_spend_label, self.cursor_spend_value = self._add_metric(metrics, 2, "Cursor spend")
-        self.claude_tokens_label, self.claude_tokens_value = self._add_metric(metrics, 3, "Claude tokens")
-        self.cursor_tokens_label, self.cursor_tokens_value = self._add_metric(metrics, 4, "Cursor tokens")
+        self.gemini_spend_label, self.gemini_spend_value = self._add_metric(metrics, 3, "Gemini spend")
+        self.claude_tokens_label, self.claude_tokens_value = self._add_metric(metrics, 4, "Claude tokens")
+        self.cursor_tokens_label, self.cursor_tokens_value = self._add_metric(metrics, 5, "Cursor tokens")
+        self.gemini_tokens_label, self.gemini_tokens_value = self._add_metric(metrics, 6, "Gemini tokens")
         card_layout.addLayout(metrics)
 
         text_block_width = WINDOW_SIZE.width() - 40
@@ -490,10 +497,12 @@ class TokenbudgetWindow(QWidget):
         self.graph_note.setFixedHeight(32)
         card_layout.addWidget(self.graph_note)
 
-        self.claude_graph = SpendHistoryGraph("Claude", "#66c2ff", self.card)
+        self.claude_graph = SpendHistoryGraph("Claude", PROVIDER_GRAPH_COLORS["claude"], self.card)
         card_layout.addWidget(self.claude_graph)
-        self.cursor_graph = SpendHistoryGraph("Cursor", "#7fdc8a", self.card)
+        self.cursor_graph = SpendHistoryGraph("Cursor", PROVIDER_GRAPH_COLORS["cursor"], self.card)
         card_layout.addWidget(self.cursor_graph)
+        self.gemini_graph = SpendHistoryGraph("Gemini", PROVIDER_GRAPH_COLORS["gemini"], self.card)
+        card_layout.addWidget(self.gemini_graph)
         self._provider_metric_widgets = {
             "claude": (
                 self.claude_spend_label,
@@ -507,10 +516,17 @@ class TokenbudgetWindow(QWidget):
                 self.cursor_tokens_label,
                 self.cursor_tokens_value,
             ),
+            "gemini": (
+                self.gemini_spend_label,
+                self.gemini_spend_value,
+                self.gemini_tokens_label,
+                self.gemini_tokens_value,
+            ),
         }
         self._provider_graph_widgets = {
             "claude": self.claude_graph,
             "cursor": self.cursor_graph,
+            "gemini": self.gemini_graph,
         }
 
         self.status_label = QLabel("", self.card)
@@ -620,17 +636,23 @@ class TokenbudgetWindow(QWidget):
         self.period_total_label.setText(f"{selected_label} total")
         self.claude_spend_label.setText(f"{PROVIDER_LABELS['claude']} spend")
         self.cursor_spend_label.setText(f"{PROVIDER_LABELS['cursor']} spend")
+        self.gemini_spend_label.setText(f"{PROVIDER_LABELS['gemini']} spend")
         self.claude_tokens_label.setText(f"{PROVIDER_LABELS['claude']} tokens")
         self.cursor_tokens_label.setText(f"{PROVIDER_LABELS['cursor']} tokens")
+        self.gemini_tokens_label.setText(f"{PROVIDER_LABELS['gemini']} tokens")
 
         self.period_total_value.setText(self._format_money(selected.get("total_cost_usd", 0)))
         self.claude_spend_value.setText(self._format_money(selected.get("claude_cost_usd", 0)))
         self.cursor_spend_value.setText(self._format_money(selected.get("cursor_cost_usd", 0)))
+        self.gemini_spend_value.setText(self._format_money(selected.get("gemini_cost_usd", 0)))
         self.claude_tokens_value.setText(
             self._format_token_breakdown(selected.get("claude_token_breakdown"))
         )
         self.cursor_tokens_value.setText(
             self._format_token_breakdown(selected.get("cursor_token_breakdown"))
+        )
+        self.gemini_tokens_value.setText(
+            self._format_token_breakdown(selected.get("gemini_token_breakdown"))
         )
 
         unit_suffix = str(graph_meta.get("unit_suffix", "h"))
@@ -642,6 +664,10 @@ class TokenbudgetWindow(QWidget):
         )
         self.cursor_graph.set_series(
             self._series_from_graph(graphs.get("cursor", [])),
+            unit_suffix=unit_suffix,
+        )
+        self.gemini_graph.set_series(
+            self._series_from_graph(graphs.get("gemini", [])),
             unit_suffix=unit_suffix,
         )
 
@@ -670,7 +696,7 @@ class TokenbudgetWindow(QWidget):
             if not isinstance(label, str):
                 continue
             try:
-                value = scaled_float(item.get("cost_usd", 0) or 0)
+                value = float(decimal_value(item.get("cost_usd", 0) or 0))
             except (InvalidOperation, TypeError, ValueError):
                 continue
             series.append((label, value))
@@ -752,7 +778,7 @@ class TokenbudgetWindow(QWidget):
 
     @staticmethod
     def _format_money(value: Any) -> str:
-        amount = scaled_decimal(value).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        amount = decimal_value(value).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         return f"${amount:,}"
 
     @staticmethod
@@ -761,7 +787,7 @@ class TokenbudgetWindow(QWidget):
 
     @staticmethod
     def _format_compact_int(value: Any) -> str:
-        amount = scaled_decimal(value)
+        amount = scaled_token_decimal(value)
         sign = "-" if amount < 0 else ""
         amount = abs(amount)
         suffixes = [

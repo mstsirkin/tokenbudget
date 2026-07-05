@@ -64,7 +64,7 @@ def build_self_command(extra_args: list[str]) -> tuple[str, list[str]]:
     argv0 = Path(sys.argv[0]).resolve() if sys.argv else Path(__file__).resolve()
     if argv0.suffix in {".py", ".pyw"}:
         return sys.executable, [str(argv0), *extra_args]
-    return sys.executable, extra_args
+    return str(argv0), extra_args
 
 
 def decimal_value(value: Any) -> Decimal:

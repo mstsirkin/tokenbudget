@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import signal
 import sys
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -928,6 +929,7 @@ def main() -> int:
         print(json.dumps(payload, sort_keys=True))
         return 0
 
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     _install_unraisable_filter()
     app = QApplication(sys.argv)
     app.setApplicationName("tokenbudget")

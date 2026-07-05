@@ -1,10 +1,12 @@
 # tokenbudget
 
-`tokenbudget` is a desktop GUI for tracking token usage across local AI agents:
+`tokenbudget` is a desktop widget for tracking token usage across local AI agents:
 Claude Code, Cursor CLI, and Gemini CLI.
 
-It gives you one small native widget that shows recent usage, token breakdowns,
-and spend/cost across the tools you already use locally.
+What it does: shows recent usage, token breakdowns, and spend/cost across the local agents.
+
+What it does not do: cloud spend/tracking across systems.
+
 
 ![tokenbudget Qt monitor](desktop/tokenbudget-qt-screenshot.png)
 

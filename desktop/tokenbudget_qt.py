@@ -907,6 +907,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _install_unraisable_filter() -> None:
+    _orig = sys.unraisablehook
+
+    def _hook(u):
+        if isinstance(u.exc_value, SystemError) and "PyObject_HasAttr" in (u.err_msg or ""):
+            return
+        _orig(u)
+
+    sys.unraisablehook = _hook
+
+
 def main() -> int:
     args = parse_args()
     if args.snapshot_helper:
@@ -917,6 +928,7 @@ def main() -> int:
         print(json.dumps(payload, sort_keys=True))
         return 0
 
+    _install_unraisable_filter()
     app = QApplication(sys.argv)
     app.setApplicationName("tokenbudget")
     app.setOrganizationName("tokenbudget")

@@ -1,0 +1,120 @@
+Nuitka 4.1.3 + Python 3.14 + PySide6 patch
+===========================================
+
+Problem
+-------
+Python 3.14 changed PyObject_HasAttr() to propagate SystemError instead
+of silently swallowing it. Nuitka's PySide6 plugin generates a protect()
+helper that calls hasattr(func, "__compiled__") on compiled slots. On a
+Nuitka-compiled bound method, this lookup goes through funcobject.c slot
+descriptors and raises:
+
+  SystemError: bad argument to internal function
+
+In Python 3.14 this crashes the connect() call. In older Python it was
+silently swallowed and protect() fell through without doing its job.
+
+The original protect() also returns the Nuitka-compiled function unchanged
+to orig_connect(), which then calls PyObject_HasAttr internally and also
+fails. The fix wraps the compiled slot in an exec()-created real PyFunction
+so PySide6 can introspect it cleanly, with the correct arity so signal
+arguments are passed through properly.
+
+File to patch
+-------------
+$(python3 -c "import nuitka, os; print(os.path.join(os.path.dirname(nuitka.__file__), 'plugins', 'standard', 'standard.nuitka-package.config.yml'))")
+
+This file is overwritten on every Nuitka upgrade, so re-apply after upgrading.
+
+How to apply
+------------
+Locate the protect() function in the file above (search for "def protect(func):")
+under the "module-name: 'PySide6'" section, and replace it with the patched
+version below. There is only one occurrence.
+
+To find the file path on any machine:
+  python3 -c "import nuitka, os; print(os.path.join(os.path.dirname(nuitka.__file__), 'plugins', 'standard', 'standard.nuitka-package.config.yml'))"
+
+Patch (unified diff)
+--------------------
+--- original
++++ patched
+@@ -1,20 +1,30 @@
+           def protect(func):
+-            if hasattr(func, "__compiled__") and hasattr(func, "im_func"):
+-                _protected.append(func)
++            try:
++              _has_compiled = hasattr(func, "__compiled__")
++            except SystemError:
++              _has_compiled = True
+
+-                protected_name = func.im_func.__name__
++            if not _has_compiled:
++              return func
+
+-                if not protected_name.startswith("_pyside6_workaround_"):
+-                  protected_name = "_pyside6_workaround_" + getattr(
+-                      func.im_func,
+-                      "__qualname__",
+-                      protected_name
+-                  )
+-                  func.im_func.__name__ = protected_name
++            try:
++              _has_im_func = hasattr(func, "im_func")
++            except SystemError:
++              _has_im_func = True
+
+-                try:
+-                  setattr(func.im_self.__class__, protected_name, func.im_func)
+-                except Exception:
+-                  pass
++            if not _has_im_func:
++              return func
+
+-            return func
++            # Wrap Nuitka-compiled method in a real PyFunction so PySide6
++            # can introspect it without hitting funcobject.c slot descriptors.
++            # Build the wrapper with the correct arity so PySide6 passes
++            # the right number of signal arguments.
++            _protected.append(func)
++            try:
++              _nargs = max(0, func.im_func.__code__.co_argcount - 1)
++            except (AttributeError, SystemError):
++              _nargs = 0
++            _args = ', '.join('_a%d' % i for i in range(_nargs))
++            _ns = {'_f': func}
++            exec("def _w(%s): return _f(%s)" % (_args, _args), _ns)
++            return _ns['_w']
+
+Patched protect() function (full replacement)
+---------------------------------------------
+          def protect(func):
+            try:
+              _has_compiled = hasattr(func, "__compiled__")
+            except SystemError:
+              _has_compiled = True
+
+            if not _has_compiled:
+              return func
+
+            try:
+              _has_im_func = hasattr(func, "im_func")
+            except SystemError:
+              _has_im_func = True
+
+            if not _has_im_func:
+              return func
+
+            # Wrap Nuitka-compiled method in a real PyFunction so PySide6
+            # can introspect it without hitting funcobject.c slot descriptors.
+            # Build the wrapper with the correct arity so PySide6 passes
+            # the right number of signal arguments.
+            _protected.append(func)
+            try:
+              _nargs = max(0, func.im_func.__code__.co_argcount - 1)
+            except (AttributeError, SystemError):
+              _nargs = 0
+            _args = ', '.join('_a%d' % i for i in range(_nargs))
+            _ns = {'_f': func}
+            exec("def _w(%s): return _f(%s)" % (_args, _args), _ns)
+            return _ns['_w']

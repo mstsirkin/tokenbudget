@@ -19,7 +19,8 @@ NUITKA_FLAGS := \
 	--include-module=desktop.tokenbudget_config \
 	--include-module=claude_usage_costs \
 	--include-module=cursor_agent_usage_costs \
-	--include-module=gemini_usage_costs
+	--include-module=gemini_usage_costs \
+	--include-module=_json
 
 .PHONY: build-deps onefile clean
 

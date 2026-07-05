@@ -50,7 +50,6 @@ The GUI reads optional settings from
 Example:
 
 ```python
-SCALE = 2  # display-only correction if totals look doubled
 WINDOW_SIZE = (440, 690)
 DISABLED_PROVIDERS = {"cursor"}
 ```
@@ -59,7 +58,6 @@ Notes:
 
 - all providers are enabled by default
 - `DISABLED_PROVIDERS` can include any of `claude`, `cursor`, and `gemini`
-- `SCALE` only changes what the GUI displays; it does not rewrite source data
 
 ## Running From Source
 
